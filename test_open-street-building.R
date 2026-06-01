@@ -1,5 +1,5 @@
 #' ## Buildings from Overture Maps - distance pipeline
-
+# First tests by Louise on chapter 2
 # Packages requis (à installer si manquants) : duckdb, DBI
 
 library(terra)
