@@ -57,11 +57,14 @@ writeRaster(rdist_clip, "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/dista
 
 
 #' ## Density of settlements map
+#' rasterize the alpine polygone to attribute NA to pixel outside the Alps and therefore not consider these pixels in the density calculation on the margin of the alps
 alps_mask     <- rasterize(alpine_area, built_count, field = 1, background = NA)
+
+# binary grid with NA for cells outside the alps, 1 for built cell and 0 non-built cell within the alps
 settlement_01 <- ifel(is.na(alps_mask), NA,
                       ifel(is.na(binary_agg2), 0, 1))   # cohérent avec la distance
 
-density_local <- focal(settlement_01, w = 17, fun = "mean",
+density_local <- focal(settlement_01, w = 33, fun = "mean",
                        na.policy = "omit", na.rm = TRUE,
                        filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/density_500m.tif",
                        overwrite = TRUE,
