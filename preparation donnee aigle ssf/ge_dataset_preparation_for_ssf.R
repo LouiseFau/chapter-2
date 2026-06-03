@@ -12,6 +12,8 @@
 library(dplyr)
 library(terra)
 library(move)
+library(amt) 
+library(tidyverse) 
 
 #' # STEP 0 : load the data ----------------------------------------------------
 output_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire"
@@ -33,7 +35,7 @@ emig_dates_filtered <- emig_dates[emig_dates$did_disperse == TRUE &
 rds_files_filtered  <- rds_files[rds_ids %in% emig_dates_filtered$individual.id]
 
 
-#' # STEP 1 : filtration and calculation of height values
+#' # STEP 1 : filtration and calculation of height values ----------------------
 #' (i) keep only GPS locations within the first 15 weeks after emigration date
 #' (ii) compute height above ground (geoid + DEM correction)
 dispersal_data <- lapply(rds_files_filtered, function(f) {
@@ -88,6 +90,91 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
 dispersal_data <- bind_rows(dispersal_data)
 rownames(dispersal_data) <- NULL
 
+# test chat autocorrelation 
+
+library(amt); library(ctmm); library(sf); library(lubridate); library(dplyr)
+
+# === A. Trajectoire amt en coordonnées MÉTRIQUES ============================
+# Le prof est en UTM (mètres). Toi en lon/lat : il FAUT projeter, sinon les
+# longueurs de pas seraient calculées en degrés. On choisit ETRS89-LAEA
+# (EPSG:3035), métrique et cohérent avec ton DEM.
+dd_sf <- st_as_sf(dispersal_data, coords = c("location.long","location.lat"),
+                  crs = 4326) %>% st_transform(3035)
+xy <- st_coordinates(dd_sf)
+dispersal_data$x_m <- xy[,1]; dispersal_data$y_m <- xy[,2]
+
+trk <- make_track(dispersal_data, x_m, y_m, timestamp,
+                  id = individual.local.identifier, crs = 3035)
+
+# === B. Fréquence d'échantillonnage d'origine par individus ==============================
+sr_by_ind <- trk %>%
+  arrange(id, t_) %>%
+  group_by(id) %>%
+  summarise(
+    dt_median = median(as.numeric(diff(t_), units = "mins")),
+    dt_q1     = quantile(as.numeric(diff(t_), units = "mins"), 0.25),
+    dt_q3     = quantile(as.numeric(diff(t_), units = "mins"), 0.75),
+    dt_max_h  = max(as.numeric(diff(t_), units = "hours")),
+    n         = n(),
+    .groups = "drop")
+
+summary(sr_by_ind$dt_median)            # distribution des cadences médianes
+
+
+# === C. Autocorrélation : variogramme + modèle de mouvement (ctmm) =========
+# ctmm estime tau_velocity = l'échelle de temps d'autocorrélation de la
+# VITESSE, exactement la quantité qui compte pour la SSF (le prof l'explique :
+# le temps entre pas affecte les estimations). Exemple sur un individu :
+one <- filter(trk, id == unique(trk$id)[1])
+tel <- as_telemetry(one)
+
+guess <- ctmm.guess(tel, interactive = FALSE)
+fit   <- ctmm.select(tel, guess)        # /!\ LENT ; mets-le en cache (saveRDS)
+summary(fit)
+
+tau_v <- fit$tau["velocity"]            # en SECONDES
+# Temps (en heures) pour que l'autocorrélation de vitesse retombe à 1/2/5 % :
+decorr_h <- tau_v * -log(c(0.01, 0.02, 0.05)) / 3600
+decorr_h                                # <- les candidats d'intervalle
+
+# Visualisation (axe ET ablines en secondes, pour rester cohérent) :
+plot(variogram(tel), xlim = c(0, 10*3600))
+abline(v = tau_v * -log(c(0.01,0.02,0.05)), col = c("blue","red","orange"))
+legend("bottomright", lty=1, col=c("blue","red","orange"),
+       legend=c("1%","2%","5%"), title="autocorr. vitesse", bty="n")
+
+
+
+
+sr_by_ind <- trk %>%
+  arrange(id, t_) %>%
+  group_by(id) %>%
+  summarise(
+    dt_median = median(as.numeric(diff(t_), units = "mins")),
+    dt_q1     = quantile(as.numeric(diff(t_), units = "mins"), 0.25),
+    dt_q3     = quantile(as.numeric(diff(t_), units = "mins"), 0.75),
+    dt_max_h  = max(as.numeric(diff(t_), units = "hours")),
+    n         = n(),
+    .groups = "drop")
+
+summary(sr_by_ind$dt_median)            # distribution des cadences médianes
+sr_by_ind %>% arrange(desc(dt_median))  # qui échantillonne le plus grossièrement ?
+
+# fin test chat autocorrelation 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #'STEP 2 : sensibility test to identify location points associated with terrestrial behaviors (resting, walking, running)
 #'(i) identification of a speed threshold 
 #'(ii) identification of an height above the ground threshold
@@ -111,5 +198,5 @@ dispersal_terrestrial <- dispersal_data %>%
          ground.speed        < 2,
          height_above_ground < 50)
 
-#'STEP 3: identify the time at which each location point become independant 
-#'
+#'STEP 3: ## Prepare data for an iSSF. 
+#' (i) check for spatio-temporal autocorrelation to define a timestamp
