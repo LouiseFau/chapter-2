@@ -18,7 +18,7 @@ library(terra)          # rast, vect, project
 library(amt)            # make_track, track_resample, steps_by_burst, random_steps, fit_distr
 library(EMbC)           # embc, smth
 #library(CircStats)      # von Mises (utilisé par amt en interne)
-#library(circular)       # statistiques circulaires (idem)
+library(circular)       # statistiques circulaires (idem)
 #library(fitdistrplus)   # ajustement de distributions (idem)
 #library(units)          # gestion des unités (idem)
 library(exactextractr)  # NOUVEAU : extraction fractionnelle dans un buffer
@@ -109,17 +109,16 @@ rownames(dispersal_data) <- NULL
 #' Ref. Garriga et al., 2016, PLOS One
 
 # bivariate matrix
-behavioural_classification <- data.matrix(dispersal_data %>%
-  select(ground.speed, height_above_ground))
+behavioural_classification <- data.matrix(dispersal_data[, c("ground.speed", "height_above_ground")])
 
 # call embc
-embc <- embc(behavioural_classification)
+embc<- embc(behavioural_classification)
 
 # investigate the bc
-X11(); sctr (bc)
+X11(); sctr (embc)
 
 embc_smoothed <- smth(embc, dlta = 0.7)
-X11();sctr(bc_smth)
+X11();sctr(embc_smth)
 
 # link the cluster labels (1: low speed, low height, 2: low speed, height height, 3: heigh speed, low height, 4: height speed, heigh height) to the original data, e.i, dispersal_data
 dispersal_data$behavior_cluster <- embc_smoothed@A
@@ -129,10 +128,29 @@ dispersal_data %>%
   group_by(behavior_cluster) %>%
   summarise(speed_med  = median(ground.speed,        na.rm = TRUE),
             height_med = median(height_above_ground, na.rm = TRUE),
-            n          = n())
-# terrestrial behaviour should have a speed ~0, and a height ~0 
+            n          = n()) # terrestrial behaviour should have a speed ~0, and a height ~0 
+
+# explore the landscape caracteristics 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Step selection functions preparation #########################################
 
 #' ### STEP 3 : step selection preparation - generate alternative steps --------
 
@@ -166,7 +184,7 @@ steps_by_individual <- gps_track %>%
                         filter_min_n_burst(min_n = 3)), # remove burst with less than 3 points
     steps = map(data_hourly, steps_by_burst, keep_cols = "end")  # calculate turning angle and step lenghts
   ) %>%
-  select(id, steps) %>%
+  dplyr::select(id, steps) %>%
   unnest(cols = steps)
 
 # diagnostic
@@ -197,7 +215,7 @@ curve(dvonmises(x, mu = ta_fit$params$mu, kappa = ta_fit$params$kappa),
 
 #' ### STEP 5 : generate alternative steps -------------------------------------
 
-#' **Philosophy:** us is defined when the end of a step correspond to a terrestrial 
+#' **Philosophy:** use is defined when the end of a step correspond to a terrestrial 
 #' behavior
 
 # filter steps by behaviors
