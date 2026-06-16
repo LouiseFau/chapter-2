@@ -3,8 +3,10 @@
 #' author: "Louise Faure"
 #' date: 02.06.2026
 #' details: (i) select all the golden eagles gps values for the first 15 weeks of the dispersal phase, 
-#' (ii) define a threshold value to keep the location close to the group
-#' (iii) identify the time at which each location become independent    
+#' (ii) classify behavior using the embc package
+#' (iii) identify the landscape features associated to the expression of each behavior
+#' (iv) generate random point within a 10 000m radius for both terrestrial and flight behavior and compared to the "used" terrestrial and 
+#' flight point for one individual (Adamello)    
 #' ---   
 
 
@@ -602,6 +604,10 @@ ggplot2::ggsave(
 
 #' #############################################################################
 #' STEP 5 : Correlation matrix for landscape variables
+#' variables 
+
+covar_all <- readRDS("resultats-intermediaire/terrestrial_and_flying_covariates.rds")
+
 #' #############################################################################
 
 # These are the continuous landscape variables.
@@ -687,18 +693,6 @@ ggplot2::ggsave(
 )
 
 
-saveRDS(
-  M_spearman,
-  file.path(output_dir, "correlation_matrix_continuous_landscape_spearman.rds")
-)
-
-write.csv(
-  round(M_spearman, 3),
-  file.path(output_dir, "correlation_matrix_continuous_landscape_spearman.csv")
-)
-
-
-
 #' #############################################################################
 #' STEP 6 : Landcover composition, terrestrial vs flying
 #' #############################################################################
@@ -710,84 +704,50 @@ if (length(frac_vars) == 0) {
 # CORINE Land Cover lookup.
 # This assumes your raster values are coded as 1:44 in standard CLC order.
 # The lookup also supports standard CLC codes such as 111, 112, 121, etc.
-clc_lookup_index <- tibble::tibble(
-  class_code = 1:44,
-  clc_code = c(
-    111, 112, 121, 122, 123, 124, 131, 132, 133, 141, 142,
-    211, 212, 213, 221, 222, 223, 231, 241, 242, 243, 244,
-    311, 312, 313, 321, 322, 323, 324, 331, 332, 333, 334, 335,
-    411, 412, 421, 422, 423,
-    511, 512, 521, 522, 523
+# CORINE / CLCplus Backbone lookup.
+# Raster codes according to CLCplus Backbone raster product:
+# 1-11 = land-cover classes
+# 253 = coastal seawater buffer
+# 254 = outside area
+# 255 = no data
+
+clc_lookup <- tibble::tibble(
+  class_code = c(
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 253, 254, 255
   ),
   landcover_name = c(
-    "Continuous urban fabric",
-    "Discontinuous urban fabric",
-    "Industrial or commercial units",
-    "Road and rail networks and associated land",
-    "Port areas",
-    "Airports",
-    "Mineral extraction sites",
-    "Dump sites",
-    "Construction sites",
-    "Green urban areas",
-    "Sport and leisure facilities",
-    "Non-irrigated arable land",
-    "Permanently irrigated land",
-    "Rice fields",
-    "Vineyards",
-    "Fruit trees and berry plantations",
-    "Olive groves",
-    "Pastures",
-    "Annual crops associated with permanent crops",
-    "Complex cultivation patterns",
-    "Agriculture with natural vegetation",
-    "Agro-forestry areas",
-    "Broad-leaved forest",
-    "Coniferous forest",
-    "Mixed forest",
-    "Natural grasslands",
-    "Moors and heathland",
-    "Sclerophyllous vegetation",
-    "Transitional woodland-shrub",
-    "Beaches, dunes, sands",
-    "Bare rocks",
-    "Sparsely vegetated areas",
-    "Burnt areas",
-    "Glaciers and perpetual snow",
-    "Inland marshes",
-    "Peat bogs",
-    "Salt marshes",
-    "Salines",
-    "Intertidal flats",
-    "Water courses",
-    "Water bodies",
-    "Coastal lagoons",
-    "Estuaries",
-    "Sea and ocean"
+    "Sealed",
+    "Woody - needle leaved trees",
+    "Woody - broadleaved deciduous trees",
+    "Woody - broadleaved evergreen trees",
+    "Low-growing woody plants",
+    "Permanent herbaceous",
+    "Periodically herbaceous",
+    "Lichens and mosses",
+    "Non- and sparsely-vegetated",
+    "Water",
+    "Snow and ice",
+    "Coastal seawater buffer",
+    "Outside area",
+    "No data"
+  ),
+  landcover_level1 = c(
+    "Artificial surfaces",             # 1 Sealed
+    "Forest",                          # 2 Needle-leaved trees
+    "Forest",                          # 3 Broadleaved deciduous trees
+    "Forest",                          # 4 Broadleaved evergreen trees
+    "Shrubland / low woody vegetation",# 5 Low-growing woody plants
+    "Herbaceous vegetation",           # 6 Permanent herbaceous
+    "Herbaceous vegetation",           # 7 Periodically herbaceous
+    "Sparse / non-vascular vegetation",# 8 Lichens and mosses
+    "Bare or sparsely vegetated",      # 9 Non- and sparsely-vegetated
+    "Water bodies",                    # 10 Water
+    "Snow and ice",                    # 11 Snow and ice
+    "Water bodies",                    # 253 Coastal seawater buffer
+    "Outside area",                    # 254 Outside area
+    "No data"                          # 255 No data
   )
-) %>%
-  dplyr::mutate(
-    landcover_level1 = dplyr::case_when(
-      clc_code >= 100 & clc_code < 200 ~ "Artificial surfaces",
-      clc_code >= 200 & clc_code < 300 ~ "Agricultural areas",
-      clc_code >= 300 & clc_code < 400 ~ "Forest and semi-natural areas",
-      clc_code >= 400 & clc_code < 500 ~ "Wetlands",
-      clc_code >= 500 & clc_code < 600 ~ "Water bodies",
-      TRUE ~ "Unclassified"
-    )
-  )
-
-clc_lookup <- dplyr::bind_rows(
-  clc_lookup_index,
-  clc_lookup_index %>%
-    dplyr::transmute(
-      class_code = clc_code,
-      clc_code = clc_code,
-      landcover_name = landcover_name,
-      landcover_level1 = landcover_level1
-    )
-) %>%
-  dplyr::distinct(class_code, .keep_all = TRUE)
+)
 
 lc_long <- covar_all %>%
   dplyr::select(
@@ -809,7 +769,7 @@ lc_long <- covar_all %>%
     values_to = "frac"
   ) %>%
   dplyr::mutate(
-    class_code = as.integer(as.numeric(sub("^frac_", "", class)))
+    class_code = as.integer(sub("^frac_", "", class))
   ) %>%
   dplyr::left_join(clc_lookup, by = "class_code") %>%
   dplyr::mutate(
@@ -830,59 +790,7 @@ lc_long <- covar_all %>%
   ) %>%
   dplyr::filter(!is.na(frac), frac > 0)
 
-# Detailed CLC class composition per individual
-p_lc_individual <- ggplot2::ggplot(
-  lc_long,
-  ggplot2::aes(
-    x = factor(individual.local.identifier),
-    y = frac,
-    fill = landcover_name
-  )
-) +
-  ggplot2::geom_col() +
-  ggplot2::coord_flip() +
-  ggplot2::facet_grid(. ~ behavior_type) +
-  ggplot2::theme_minimal(base_size = 11) +
-  ggplot2::labs(
-    x = "individual",
-    y = "mean fractional cover in 100 m buffer",
-    fill = "landcover class",
-    title = "Landcover composition by individual and behaviour"
-  )
 
-p_lc_individual
-
-# Mean CLC class composition by behaviour
-lc_behavior_mean <- lc_long %>%
-  dplyr::group_by(behavior_type, landcover_name, landcover_level1) %>%
-  dplyr::summarise(
-    mean_frac = mean(frac, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  dplyr::group_by(behavior_type) %>%
-  dplyr::mutate(
-    mean_frac = mean_frac / sum(mean_frac, na.rm = TRUE)
-  ) %>%
-  dplyr::ungroup()
-
-p_lc_behavior_mean <- ggplot2::ggplot(
-  lc_behavior_mean,
-  ggplot2::aes(
-    x = behavior_type,
-    y = mean_frac,
-    fill = landcover_name
-  )
-) +
-  ggplot2::geom_col() +
-  ggplot2::theme_minimal(base_size = 11) +
-  ggplot2::labs(
-    x = "behaviour",
-    y = "mean fractional cover",
-    fill = "landcover class",
-    title = "Mean landcover composition: terrestrial vs flying"
-  )
-
-p_lc_behavior_mean
 
 # Optional coarser plot: CLC level-1 classes, easier to read
 lc_level1 <- lc_long %>%
@@ -896,6 +804,20 @@ lc_level1 <- lc_long %>%
     .groups = "drop"
   )
 
+
+# color code : 
+# Color code for CLC level-1 classes
+lc_level1_colors <- c(
+  "Artificial surfaces" = "snow4",
+  "Bare or sparsely vegetated" = "bisque2",
+  "Forest" = "seagreen",
+  "Herbaceous vegetation" = "darkolivegreen2",
+  "Shrubland / low woody vegetation" = "lightgoldenrod1",
+  "Snow and ice" = "lightskyblue1",
+  "Water bodies" = "skyblue4"
+)
+
+
 p_lc_level1 <- ggplot2::ggplot(
   lc_level1,
   ggplot2::aes(
@@ -907,6 +829,10 @@ p_lc_level1 <- ggplot2::ggplot(
   ggplot2::geom_col() +
   ggplot2::coord_flip() +
   ggplot2::facet_grid(. ~ behavior_type) +
+  ggplot2::scale_fill_manual(
+    values = lc_level1_colors,
+    na.value = "grey80"
+  ) +
   ggplot2::theme_minimal(base_size = 11) +
   ggplot2::labs(
     x = "individual",
@@ -917,376 +843,309 @@ p_lc_level1 <- ggplot2::ggplot(
 
 p_lc_level1
 
-
-
-#' end alternative step 3
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#' STEP 3 : Landscape characteristics under terrestrial behaviour
-#'   3a  spatial thinning of terrestrial locations (per individual)
-#'   3b  buffer extraction of covariates (area-weighted mean / fractional)
-#'   3c  exploratory visualisation (population & individual level)
-#'   3d  OPTIONAL available/background sample (use vs. availability context)
+ggplot2::ggsave(
+  filename = file.path(plot_dir, "landcover_per_behavior_type_per_ind.png"),
+  plot = p_lc_level1,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+#' test for one individual
+
+#' #############################################################################
+#' STEP 7 : Used vs available analysis for one individual
 #' #############################################################################
 
+# Individual to test
+target_ind <- "Adamello20"
 
-#' Projected CRS in METRES for all distance / buffer operations.
-crs_proj <- terra::crs(dem)
+# Large availability buffer around terrestrial points, in metres
+available_buffer_m <- 10000
 
-#' ### STEP 3a : spatial thinning ----------------------------------------------
-# filter dispersal data to retain only the terrestrial points
-terr <- dispersal_data %>%
-  filter(behavior_cluster == 1,
-         !is.na(location.long), !is.na(location.lat))
+# Number of random available points
+n_available <- 5000
 
-# transform to a spatial object with a crs
-terr_sf <- st_as_sf(terr,
-                    coords = c("location.long", "location.lat"),
-                    crs = 4326, remove = FALSE) %>%
-  st_transform(crs_proj)
+# Buffer used for covariate extraction around random available points
+buf_r <- 100
 
-## calculate distance between time-ordered fixes per individuals
-consec_dist <- function(geom) {
-  n <- length(geom)
-  if (n < 2) return(rep(NA_real_, n))
-  c(NA, as.numeric(st_distance(geom[-n], geom[-1], by_element = TRUE)))
+# Clean individual names if tags are written in parentheses
+clean_individual_name <- function(x) {
+  trimws(gsub("\\s*\\([^\\)]*\\)\\s*$", "", as.character(x)))
 }
 
-## fill step_m per individual, ordered by time
-terr_sf$step_m <- NA_real_
-for (id in unique(terr_sf$individual.local.identifier)) {
-  ix <- which(terr_sf$individual.local.identifier == id)
-  ix <- ix[order(terr_sf$timestamp[ix])]
-  terr_sf$step_m[ix] <- consec_dist(st_geometry(terr_sf)[ix])
+# Check available individual names
+individual_names <- dispersal_data %>%
+  dplyr::mutate(individual.clean = clean_individual_name(individual.local.identifier)) %>%
+  dplyr::distinct(individual.local.identifier, individual.clean) %>%
+  dplyr::arrange(individual.clean)
+
+print(individual_names)
+
+# Select Adamello
+adamello_ids <- individual_names %>%
+  dplyr::filter(grepl(target_ind, individual.clean, ignore.case = TRUE))
+
+print(adamello_ids)
+
+if (nrow(adamello_ids) == 0) {
+  stop("No individual matching '", target_ind, "' was found.")
 }
 
-## inspect the per-individual distance structure BEFORE fixing a threshold.
-med_step <- terr_sf %>%
-  st_drop_geometry() %>%
-  group_by(individual.local.identifier) %>%
-  summarise(median_step_m = median(step_m, na.rm = TRUE),
-            q25 = quantile(step_m, .25, na.rm = TRUE),
-            q75 = quantile(step_m, .75, na.rm = TRUE),
-            n   = n(), .groups = "drop")
-print(med_step)
-
-## filter the point to keep only location when they are separated of at least d. distance (e.i, 25m)
-greedy_thin_idx <- function(xy, d) {
-  keep <- logical(nrow(xy))
-  kept <- matrix(nrow = 0, ncol = 2)
-  for (i in seq_len(nrow(xy))) {
-    if (nrow(kept) == 0 ||
-        all(sqrt((kept[, 1] - xy[i, 1])^2 + (kept[, 2] - xy[i, 2])^2) >= d)) {
-      keep[i] <- TRUE
-      kept <- rbind(kept, xy[i, ])
-    }
-  }
-  keep
+if (nrow(adamello_ids) > 1) {
+  stop(
+    "Several individuals match '", target_ind, "'. ",
+    "Please choose one exact individual.local.identifier."
+  )
 }
 
-d_thin <- median(med_step$median_step_m, na.rm = TRUE)   # e.g. override: d_thin <- 50
+target_id_raw <- adamello_ids$individual.local.identifier[1]
+target_id_clean <- adamello_ids$individual.clean[1]
 
-terr_sf$keep <- FALSE
-for (id in unique(terr_sf$individual.local.identifier)) {
-  ix <- which(terr_sf$individual.local.identifier == id)
-  ix <- ix[order(terr_sf$timestamp[ix])]
-  xy <- st_coordinates(terr_sf)[ix, , drop = FALSE]
-  terr_sf$keep[ix] <- greedy_thin_idx(xy, d_thin)
+message("Selected individual: ", target_id_clean)
+
+#' ---------------------------------------------------------------------------
+#' Separate availability areas for terrestrial and flying behaviour
+#' ---------------------------------------------------------------------------
+
+available_buffer_terr_m <- 10000
+available_buffer_fly_m  <- 10000
+
+n_available_terr <- 5000
+n_available_fly  <- 5000
+
+set.seed(123)
+
+# Terrestrial used points for Adamello
+adamello_terr_sf <- terr_thin %>%
+  dplyr::mutate(
+    individual.clean = clean_individual_name(individual.local.identifier)
+  ) %>%
+  dplyr::filter(individual.clean == target_id_clean)
+
+# Flying used points for Adamello
+adamello_fly_sf <- fly_thin %>%
+  dplyr::mutate(
+    individual.clean = clean_individual_name(individual.local.identifier)
+  ) %>%
+  dplyr::filter(individual.clean == target_id_clean)
+
+if (nrow(adamello_terr_sf) == 0) {
+  stop("No terrestrial points found for ", target_id_clean)
 }
 
-terr_thin <- terr_sf %>% filter(keep)
-message(sprintf("Thinning at d = %.0f m : %d -> %d points",
-                d_thin, nrow(terr_sf), nrow(terr_thin)))
-
-
-#' ### STEP 3b : buffer extraction ---------------------------------------------
-
-## Buffer radius (metres)
-buf_r   <- 100
-buffers <- st_buffer(terr_thin, dist = buf_r)   # buffers are in crs_proj (metres)
-
-## extract categorical and numerical values
-extract_into <- function(buffers_proj, r, categorical = FALSE, fun = "mean") {
-  b <- st_transform(buffers_proj, terra::crs(r))   # match each raster's CRS
-  if (categorical) {
-    exact_extract(r, b, "frac", progress = FALSE)
-  } else {
-    exact_extract(r, b, fun, progress = FALSE)
-  }
+if (nrow(adamello_fly_sf) == 0) {
+  stop("No flying points found for ", target_id_clean)
 }
 
-terr_thin$elevation  <- extract_into(buffers, covar_1_elevation)
-terr_thin$dist_ridgeline  <- extract_into(buffers, covar_2_distance_ridgeline)
-terr_thin$tri             <- extract_into(buffers, covar_3_TRI)
-terr_thin$slope           <- extract_into(buffers, covar_4_slope)
-terr_thin$tpi             <- extract_into(buffers, covar_5_TPI)
-terr_thin$dist_settlement <- extract_into(buffers, covar_6_distance_settlement)
-terr_thin$dens_settlement <- extract_into(buffers, covar_7_density_settlement)
-terr_thin$pop_dens <- extract_into(buffers, covar_8_density_pop_km2)
+# Availability area around terrestrial points
+adamello_available_terr_area <- adamello_terr_sf %>%
+  sf::st_union() %>%
+  sf::st_buffer(dist = available_buffer_terr_m)
 
-lc_frac <- extract_into(buffers, covar_9_landcover, categorical = TRUE)  # frac_* cols
+# Availability area around flying points
+adamello_available_fly_area <- adamello_fly_sf %>%
+  sf::st_union() %>%
+  sf::st_buffer(dist = available_buffer_fly_m)
 
-covar_tbl <- terr_thin %>% st_drop_geometry() %>% bind_cols(lc_frac)
-saveRDS(covar_tbl, file.path(output_dir, "terrestrial_covariates.rds"))
+# Random available terrestrial points
+available_terr_geom <- sf::st_sample(
+  adamello_available_terr_area,
+  size = n_available_terr,
+  type = "random"
+)
+
+adamello_available_terr_sf <- sf::st_sf(
+  individual.local.identifier = target_id_raw,
+  individual.clean = target_id_clean,
+  behavior_type = "available",
+  behavior_subtype = "available_terrestrial_buffer",
+  availability_class = "available_terrestrial",
+  geometry = available_terr_geom,
+  crs = sf::st_crs(adamello_terr_sf)
+)
+
+# Random available flying points
+available_fly_geom <- sf::st_sample(
+  adamello_available_fly_area,
+  size = n_available_fly,
+  type = "random"
+)
+
+adamello_available_fly_sf <- sf::st_sf(
+  individual.local.identifier = target_id_raw,
+  individual.clean = target_id_clean,
+  behavior_type = "available",
+  behavior_subtype = "available_flying_buffer",
+  availability_class = "available_flying",
+  geometry = available_fly_geom,
+  crs = sf::st_crs(adamello_fly_sf)
+)
 
 
-#' ### STEP 3c : exploratory visualisation -------------------------------------
-
-## (1) RIDGELINES: full distribution shape, one row per individual, per variable.
-##     Reveals skew / bimodality that a boxplot hides (e.g. a long right tail in
-##     distance-to-settlement, or two modes = two roost "types").
-human_vars <- c("dist_settlement", "dens_settlement", "pop_dens")
-long_human <- long %>%
-  dplyr::filter(variable %in% human_vars)
-p_ridge_human <- ggplot(
-  long_human,
-  aes(x = value, y = individual.id, fill = variable)
-) +
-  geom_density_ridges(
-    scale = 1.2,
-    alpha = .6,
-    rel_min_height = .01,
-    quantile_lines = TRUE,
-    quantiles = 2
-  ) +
-  facet_wrap(~ variable, scales = "free_x") +
-  guides(fill = "none") +
-  theme_minimal(base_size = 11) +
-  labs(
-    y = "individual",
-    x = "human-related covariate value at terrestrial locations"
+adamello_available_terr_covars <- extract_landscape(
+  adamello_available_terr_sf,
+  buf_r = buf_r
+) %>%
+  dplyr::mutate(
+    individual.clean = target_id_clean,
+    availability_class = "available_terrestrial"
   )
 
-p_ridge_human
+adamello_available_fly_covars <- extract_landscape(
+  adamello_available_fly_sf,
+  buf_r = buf_r
+) %>%
+  dplyr::mutate(
+    individual.clean = target_id_clean,
+    availability_class = "available_flying"
+  )
 
 
+adamello_used_terr <- covar_all %>%
+  dplyr::mutate(
+    individual.clean = clean_individual_name(individual.local.identifier)
+  ) %>%
+  dplyr::filter(
+    individual.clean == target_id_clean,
+    behavior_type == "terrestrial"
+  ) %>%
+  dplyr::mutate(
+    availability_class = "used_terrestrial"
+  )
 
-## (2) COLLINEARITY: slope/TRI/TPI and the three human-footprint layers are very
-##     likely correlated. Check before any modelling.
-M <- cor(covar_tbl[, cont_vars], use = "pairwise.complete.obs", method = "spearman")
-# corrplot::corrplot(M, method = "number", type = "upper")
-print(round(M, 2))
+adamello_used_fly <- covar_all %>%
+  dplyr::mutate(
+    individual.clean = clean_individual_name(individual.local.identifier)
+  ) %>%
+  dplyr::filter(
+    individual.clean == target_id_clean,
+    behavior_type == "flying"
+  ) %>%
+  dplyr::mutate(
+    availability_class = "used_flying"
+  )
 
-matrix of correlation
+# combine 
+adamello_used_available_2scale <- dplyr::bind_rows(
+  adamello_available_terr_covars,
+  adamello_used_terr,
+  adamello_available_fly_covars,
+  adamello_used_fly
+)
 
+frac_vars_adamello_2scale <- names(adamello_used_available_2scale)[
+  startsWith(names(adamello_used_available_2scale), "frac_")
+]
 
+adamello_used_available_2scale <- adamello_used_available_2scale %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(frac_vars_adamello_2scale),
+      ~ tidyr::replace_na(.x, 0)
+    ),
+    availability_class = factor(
+      availability_class,
+      levels = c(
+        "available_terrestrial",
+        "used_terrestrial",
+        "available_flying",
+        "used_flying"
+      )
+    )
+  )
 
+table(adamello_used_available_2scale$availability_class)
 
-## (3) LANDCOVER composition per individual (mean fractional cover).
-##     Consider reclassifying CLC codes to level-1 / human-vs-natural first.
-lc_long <- covar_tbl %>%
-  dplyr::select(individual.local.identifier, dplyr::starts_with("frac_")) %>%
-  dplyr::group_by(individual.local.identifier) %>%
+adamello_lc_long_2scale <- adamello_used_available_2scale %>%
+  dplyr::select(
+    availability_class,
+    dplyr::all_of(frac_vars_adamello_2scale)
+  ) %>%
+  dplyr::group_by(availability_class) %>%
   dplyr::summarise(
-    dplyr::across(dplyr::starts_with("frac_"), ~ mean(.x, na.rm = TRUE)),
+    dplyr::across(
+      dplyr::all_of(frac_vars_adamello_2scale),
+      ~ mean(.x, na.rm = TRUE)
+    ),
     .groups = "drop"
   ) %>%
   tidyr::pivot_longer(
-    cols = -individual.local.identifier,
+    cols = dplyr::all_of(frac_vars_adamello_2scale),
     names_to = "class",
     values_to = "frac"
-  )
-
-p_lc <- ggplot(lc_long, aes(factor(individual.local.identifier), frac, fill = class)) +
-  geom_col() + coord_flip() +
-  theme_minimal(base_size = 11) +
-  labs(x = "individual", y = "mean fractional cover in buffer")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Step selection functions preparation #########################################
-
-#' ### STEP 3 : step selection preparation - generate alternative steps --------
-
-#' **Philosophy:** we retain all gps location associated to terrestrial and non-terrestrial 
-#' behaviours. It is only later that we will consider in the definition of the landscape
-#' caracteristics used that we will consider the steps that end with a terrestrial behaviour
-
-# reproject the data to a metric crs
-crs_metric <- "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs"
-dd_sf <- st_as_sf(dispersal_data,
-                  coords = c("location.long", "location.lat"),
-                  crs    = 4326) %>%
-  st_transform(crs_metric)
-dispersal_data$x_m <- st_coordinates(dd_sf)[, 1]
-dispersal_data$y_m <- st_coordinates(dd_sf)[, 2]
-
-# create a track
-gps_track <- make_track(dispersal_data,
-                        x_m, y_m, timestamp,
-                        id               = individual.local.identifier,
-                        behavior_cluster = behavior_cluster,   # on conserve l'étiquette
-                        crs              = 3035)
-
-# hourly re sampling of burst 
-steps_by_individual <- gps_track %>%
-  nest(data = -id) %>%
-  mutate(
-    data_hourly = map(data, ~ track_resample(.x,
-                                             rate      = hours(1),
-                                             tolerance = minutes(10)) %>% # 1 hour + 10 minutes tolerance
-                        filter_min_n_burst(min_n = 3)), # remove burst with less than 3 points
-    steps = map(data_hourly, steps_by_burst, keep_cols = "end")  # calculate turning angle and step lenghts
   ) %>%
-  dplyr::select(id, steps) %>%
-  unnest(cols = steps)
-
-# diagnostic
-nrow(steps_by_individual)                            # nombre total de pas
-table(steps_by_individual$behavior_cluster)          # distribution des clusters d'ARRIVÉE
-
-
-#' ### STEP 4 : estimate turning angles and step length distributions -----------
-
-# gamma sur les longueurs de pas
-sl_fit <- fit_distr(steps_by_individual$sl_, "gamma")
-
-# von Mises sur les angles de virage
-ta_fit <- fit_distr(steps_by_individual$ta_, "vonmises")
-
-# inspection visuelle
-par(mfrow = c(1, 2))
-hist(steps_by_individual$sl_, breaks = 50, freq = FALSE,
-     xlab = "Step length (m)", main = "")
-curve(dgamma(x, shape = sl_fit$params$shape, scale = sl_fit$params$scale),
-      add = TRUE, col = "red")
-hist(steps_by_individual$ta_, breaks = 30, freq = FALSE,
-     xlab = "Turning angle (rad)", main = "")
-curve(dvonmises(x, mu = ta_fit$params$mu, kappa = ta_fit$params$kappa),
-      add = TRUE, col = "red")
-
-
-
-#' ### STEP 5 : generate alternative steps -------------------------------------
-
-#' **Philosophy:** use is defined when the end of a step correspond to a terrestrial 
-#' behavior
-
-# filter steps by behaviors
-used_steps <- steps_by_individual %>%
-  filter(behavior_cluster == 1)         
-
-# amt::random_steps
-ssf_data <- used_steps %>%
-  random_steps(n_control = 50,          # 50 random steps per observed steps
-               sl_distr  = sl_fit,
-               ta_distr  = ta_fit) %>%
-  # stratum id (used + 50 random non-used = 1 stratum)
-  mutate(stratum_id = paste(id, burst_, step_id_, sep = "_"))
-
-# vérification : chaque strate doit contenir 1 used (case_ = TRUE) et 50 available
-ssf_data %>% group_by(stratum_id) %>%
-  summarise(n_used = sum(case_), n_avail = sum(!case_)) %>%
-  count(n_used, n_avail)                # attendu : n_used=1, n_avail=50 partout
-
-
-
-#' ### STEP 6: annotation with topographic and human info ----------------------
-
-#' For each end point (used of available), we extract the raster values from the 
-#' rasters
-
-# open raster layers
-covar_1_elevation <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
-covar_2_distance_ridgeline <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/donnees/raster/topography/distance_to_ridge_line_complete_version.tif")
-covar_3_TRI <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/DEM_25m/TRI/TRI.tif")
-covar_4_slope <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/DEM_25m/slope/slope_25.tif")
-covar_5_TPI <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/DEM_25m/TPI/Topographic Position Index.tif")
-covar_6_distance_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/distance to settlements 30 m cropped/dist_to_settlements_30m_croped.tif")
-covar_7_density_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/density_rad_495m.tif")
-covar_8_density_pop_km2 <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_pop_km2.tif")
-covar_9_landcover <- terra::rast("C:/Users/lfaure7/OneDrive/THESE/Conférences/Sempach workshop/Donnees/Landscape layers/CLC_longlat_10m.tif")
-
-#reproject tracking data to match raster crs, extract values, convert back to wgs and save as a dataframe
-ssf_annotated <- ssf_data %>%
-  mutate(
-    dist_buildings = terra::extract(
-      covar_raster_1,
-      terra::vect(cbind(x2_, y2_), crs = "EPSG:3035") |>      # point d'arrivée
-        terra::project(crs(covar_raster_1))
-    )[, 2],
-    TRI_100 = terra::extract(
-      covar_raster_2,
-      terra::vect(cbind(x2_, y2_), crs = "EPSG:3035") |>
-        terra::project(crs(covar_raster_2))
-    )[, 2]
+  dplyr::mutate(
+    class_code = as.integer(sub("^frac_", "", class))
+  ) %>%
+  dplyr::left_join(clc_lookup, by = "class_code") %>%
+  dplyr::mutate(
+    landcover_name = dplyr::if_else(
+      is.na(landcover_name),
+      class,
+      landcover_name
+    ),
+    landcover_level1 = dplyr::if_else(
+      is.na(landcover_level1),
+      "Unmapped",
+      landcover_level1
+    )
+  ) %>%
+  dplyr::filter(
+    !is.na(frac),
+    frac > 0,
+    !landcover_level1 %in% c("Outside area", "No data")
   )
 
-# export as a csv. 
+adamello_lc_level1_2scale <- adamello_lc_long_2scale %>%
+  dplyr::group_by(
+    availability_class,
+    landcover_level1
+  ) %>%
+  dplyr::summarise(
+    frac = sum(frac, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::group_by(availability_class) %>%
+  dplyr::mutate(
+    prop = frac / sum(frac, na.rm = TRUE)
+  ) %>%
+  dplyr::ungroup()
+
+p_adamello_lc_2scale <- ggplot2::ggplot(
+  adamello_lc_level1_2scale,
+  ggplot2::aes(
+    x = availability_class,
+    y = prop,
+    fill = landcover_level1
+  )
+) +
+  ggplot2::geom_col() +
+  ggplot2::scale_fill_manual(
+    values = lc_level1_colors,
+    na.value = "grey80"
+  ) +
+  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(angle = 30, hjust = 1)
+  ) +
+  ggplot2::labs(
+    x = NULL,
+    y = "proportion of mean fractional cover",
+    fill = "landcover level 1",
+    title = paste0(
+      "Used vs available landcover composition for ",
+      target_id_clean
+    ),
+    subtitle = "Availability defined separately for terrestrial and flying behaviours"
+  )
+
+p_adamello_lc_2scale
+
+ggplot2::ggsave(
+  filename = file.path(plot_dir, "adamello.png"),
+  plot = p_adamello_lc_2scale,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
