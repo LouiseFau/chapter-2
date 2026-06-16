@@ -1,5 +1,5 @@
 #' ---
-#' title: "Preparing Golden Eagle dataset for ssf"
+#' title: "Exploratory analysis flight versus terrestrial behavior"
 #' author: "Louise Faure"
 #' date: 02.06.2026
 #' details: (i) select all the golden eagles gps values for the first 15 weeks of the dispersal phase, 
