@@ -13,7 +13,7 @@ library(tidyr)       # pivot_longer for visualisation
 library(sf)          # spatial operations (st_as_sf, st_buffer, st_transform)
 library(terra)       # raster operations (rast, extract, project)
 library(ggplot2)     # visualisation
-
+library(move)
 
 ################################################################################
 #' ### STEP 0 : load the data --------------------------------------------------
@@ -28,7 +28,7 @@ dem <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretr
 
 # raster layers
 distance_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/distance to settlements 30 m cropped/dist_to_settlements_30m_croped.tif")
-density_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_pop_km2_meters/density_settlement_km2_meters_crs.tif")
+density_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_settlement_km2_m/density_settlement_km2_meters_crs.tif")
 density_pop_km2 <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_pop_km2_m/density_pop_km2_meters_crs.tif")
 landcover <- terra::rast("C:/Users/lfaure7/OneDrive/THESE/Conférences/Sempach workshop/Donnees/Landscape layers/CLC_longlat_10m.tif")
 
@@ -110,70 +110,23 @@ rownames(dispersal_data) <- NULL
 #' 
 #' **Philosophy:** preliminary analysis revealed that distance to settlement, 
 #' human density and settlement density were highly correlated (see annex 1).
-#' We can therefore aggregate all these raster layer in one. Here are the correlation 
-#' coefficient obtained. 
+#' We can therefore aggregate all these raster layer in one. Here are the 
+#' correlation coefficient obtained. 
 #' 
 #'              dist_settlement dens_settlement dens_pop_km2
 #'dist_settlement   1.0000000      -0.8647500   -0.8249338
 #'dens_settlement  -0.8647500       1.0000000    0.8762607
 #'dens_pop_km2     -0.8249338       0.8762607    1.0000000
 #' 
-#' (1) create human footprint raster
-#' (2) extract location points in the vicinity of human infrastructure using at
+#' (1) import the human footprint raster which has been created following the
+#' steps in annex 2
+#' (2) extract location points in the vicinity of human footprint using at
 #' least to different scale
 #' (3) inspect the number of location retained per individuals
 ################################################################################
 
-# Transform
-
-# distance_settlement : inverser (proximité = 1/distance)
-# +1 pour éviter division par zéro quand dist = 0
-prox_settlement <- 1 / (distance_settlement + 1)
-
-# log-transformer les densités pour réduire l'effet des extrêmes urbains
-# (Genève ou Turin ne doivent pas écraser toute la variabilité alpine)
-dens_s_log <- log1p(density_settlement_r)
-dens_p_log <- log1p(density_pop_km2_r)
-
-# --- A3 : normaliser chaque couche entre 0 et 1 ---
-# (valeur - min) / (max - min)
-# nécessaire pour rendre les trois couches comparables avant combinaison
-
-normalize <- function(r) {
-  mn <- terra::global(r, "min", na.rm = TRUE)[[1]]
-  mx <- terra::global(r, "max", na.rm = TRUE)[[1]]
-  (r - mn) / (mx - mn)
-}
-
-prox_norm  <- normalize(prox_settlement)
-dens_s_norm <- normalize(dens_s_log)
-dens_p_norm <- normalize(dens_p_log)
-
-# --- A4 : combiner en HFI (moyenne des trois composantes) ---
-# poids égaux : hypothèse conservative, à mentionner dans la méthode
-hfi <- (prox_norm + dens_s_norm + dens_p_norm) / 3
-
-names(hfi) <- "hfi"
-
-# --- A5 : masquer sur les Alpes ---
-alpes_v <- terra::vect(
-  sf::st_read("C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_area_corrected_geometry.shp")
-) %>% terra::project(terra::crs(distance_settlement))
-
-hfi_masked <- terra::crop(hfi, alpes_v) %>%
-  terra::mask(alpes_v)
-
-terra::writeRaster(hfi_masked,
-                   file.path(output_dir, "human_footprint_index_alpes.tif"),
-                   datatype  = "FLT4S",
-                   overwrite = TRUE)
-
-################################################################################
-# STEP B : extraire le HFI à chaque point GPS et définir les seuils
-################################################################################
-
-# --- B1 : projeter les points GPS dans le CRS du HFI ---
-crs_hfi <- terra::crs(hfi_masked)
+hfi_masked <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/Human footprint index/human_footprint_index.tif")
+crs_hfi <- terra::crs(hfi_masked) # project point in the crs of hfi
 
 pts_proj <- dispersal_data %>%
   st_as_sf(coords = c("location.long", "location.lat"),
@@ -181,75 +134,75 @@ pts_proj <- dispersal_data %>%
   st_transform(crs_hfi) %>%
   terra::vect()
 
-# --- B2 : extraire la valeur HFI et les covariables brutes à chaque point ---
-# on garde aussi les covariables brutes pour pouvoir les utiliser
-# comme descripteurs des points retenus (ta deuxième approche)
-
+# extract covariate
 dispersal_data$hfi              <- terra::extract(hfi_masked,          pts_proj)[, 2]
 dispersal_data$dist_settlement  <- terra::extract(distance_settlement,  pts_proj)[, 2]
-dispersal_data$dens_settlement  <- terra::extract(density_settlement_r, pts_proj)[, 2]
-dispersal_data$dens_pop_km2     <- terra::extract(density_pop_km2_r,    pts_proj)[, 2]
+dispersal_data$dens_settlement  <- terra::extract(density_settlement, pts_proj)[, 2]
+dispersal_data$dens_pop_km2     <- terra::extract(density_pop_km2,    pts_proj)[, 2]
 
-# --- B3 : définir les seuils de proximité sur le HFI ---
-# le HFI est entre 0 (aucune empreinte humaine) et 1 (maximum)
-# les seuils sont des quantiles de la distribution du HFI dans les Alpes
-# ce qui est plus défendable que des valeurs arbitraires absolues :
-# "proche des humains" = dans le quartile supérieur du HFI alpin
-
-q_hfi <- terra::global(hfi_masked, fun = quantile,
-                       probs = c(0.50, 0.75, 0.90),
-                       na.rm = TRUE)
-print(q_hfi)  # vérifie les valeurs avant de fixer les seuils
-
-# trois niveaux de "proximité humaine" basés sur les quantiles du HFI
+# define threshold in meters
 dispersal_data <- dispersal_data %>%
   dplyr::mutate(
-    near_human_q50 = hfi >= q_hfi[1, 1],   # > médiane du HFI alpin
-    near_human_q75 = hfi >= q_hfi[2, 1],   # > 3ème quartile
-    near_human_q90 = hfi >= q_hfi[3, 1]    # > 90ème percentile
+    near_human_100m = !is.na(dist_settlement) & dist_settlement <= 100,
+    near_human_500m = !is.na(dist_settlement) & dist_settlement <= 500,
+    near_human_1km  = !is.na(dist_settlement) & dist_settlement <= 1000
   )
 
-################################################################################
-# STEP C : inspecter le nombre de points retenus par individu et par seuil
-################################################################################
+# inspect the nbr of point per meter threshold
+dispersal_data %>%
+  dplyr::summarise(
+    n_total     = n(),
+    n_100m      = sum(near_human_100m, na.rm = TRUE),
+    n_500m      = sum(near_human_500m, na.rm = TRUE),
+    n_1km       = sum(near_human_1km,  na.rm = TRUE),
+    pct_100m    = round(100 * n_100m / n_total, 1),
+    pct_500m    = round(100 * n_500m / n_total, 1),
+    pct_1km     = round(100 * n_1km  / n_total, 1)
+  ) %>% print()
+
+# inspect the nbr of point per individual and threshold
 
 sample_summary <- dispersal_data %>%
-  dplyr::group_by(individual.id) %>%
+  dplyr::group_by(individual.local.identifier) %>%
   dplyr::summarise(
-    n_total    = n(),
-    n_q50      = sum(near_human_q50, na.rm = TRUE),
-    n_q75      = sum(near_human_q75, na.rm = TRUE),
-    n_q90      = sum(near_human_q90, na.rm = TRUE),
-    pct_q50    = round(100 * n_q50 / n_total, 1),
-    pct_q75    = round(100 * n_q75 / n_total, 1),
-    pct_q90    = round(100 * n_q90 / n_total, 1),
-    .groups    = "drop"
+    n_total  = n(),
+    n_100m   = sum(near_human_100m, na.rm = TRUE),
+    n_500m   = sum(near_human_500m, na.rm = TRUE),
+    n_1km    = sum(near_human_1km,  na.rm = TRUE),
+    pct_100m = round(100 * n_100m / n_total, 1),
+    pct_500m = round(100 * n_500m / n_total, 1),
+    pct_1km  = round(100 * n_1km  / n_total, 1),
+    .groups  = "drop"
   )
 
-print(sample_summary)
+print(sample_summary, n = 66)
 
-# visualisation : nombre de points par individu et par seuil
+# Plot the results
 plot_data <- sample_summary %>%
-  dplyr::select(individual.id, n_q50, n_q75, n_q90) %>%
-  tidyr::pivot_longer(-individual.id,
+  dplyr::select(individual.local.identifier, n_100m, n_500m, n_1km) %>%
+  tidyr::pivot_longer(-individual.local.identifier,
                       names_to  = "threshold",
                       values_to = "n_fixes") %>%
   dplyr::mutate(threshold = factor(threshold,
-                                   levels = c("n_q50", "n_q75", "n_q90"),
-                                   labels = c("HFI > Q50", "HFI > Q75", "HFI > Q90")))
+                                   levels = c("n_100m", "n_500m", "n_1km"),
+                                   labels = c("≤ 100 m", "≤ 500 m", "≤ 1 km")))
 
 ggplot(plot_data,
-       aes(x = reorder(factor(individual.id), -n_fixes), y = n_fixes)) +
-  geom_col(fill = "steelblue") +
+       aes(x     = reorder(individual.local.identifier, -n_fixes),
+           y     = n_fixes,
+           fill  = threshold)) +
+  geom_col(position = "dodge") +
   facet_wrap(~ threshold, ncol = 1, scales = "free_y") +
+  scale_fill_brewer(palette = "Blues", guide = "none") +
   labs(x     = "Individu",
        y     = "Nombre de fixes GPS",
-       title = "Points GPS en zone à forte empreinte humaine") +
+       title = "Points GPS par proximité aux settlements") +
   theme_minimal(base_size = 11) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-saveRDS(dispersal_data,
-        file.path(output_dir, "dispersal_data_hfi.rds"))
+################################################################################
+#' ### STEP 3 : movement caracteristics in the vicinity of humans 
+################################################################################
 
 
 
@@ -289,3 +242,39 @@ names(density_settlement_r)  <- "dens_settlement"
 names(density_pop_km2_r)     <- "dens_pop_km2"
 
 cor(samp, method = "spearman")
+
+
+
+
+################################################################################
+#' ### ANNEX 2 : prepare Human footprint index 
+################################################################################
+
+# transform distance to proximity and reduce extrem value by using log
+prox_settlement <- 1 / (distance_settlement + 1)
+dens_s_log <- log1p(density_settlement)
+dens_p_log <- log1p(density_pop_km2)
+
+# normalisation
+normalize <- function(r) {
+  mn <- terra::global(r, "min", na.rm = TRUE)[[1]]
+  mx <- terra::global(r, "max", na.rm = TRUE)[[1]]
+  (r - mn) / (mx - mn)
+}
+
+prox_norm  <- normalize(prox_settlement)
+dens_s_norm <- normalize(dens_s_log)
+dens_p_norm <- normalize(dens_p_log)
+
+# combine
+hfi <- (prox_norm + dens_s_norm + dens_p_norm) / 3
+
+names(hfi) <- "hfi"
+
+# crop
+alpes_v <- terra::vect(
+  sf::st_read("C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_area_corrected_geometry.shp")
+) %>% terra::project(terra::crs(distance_settlement))
+
+hfi_masked <- terra::crop(hfi, alpes_v) %>%
+  terra::mask(alpes_v)
