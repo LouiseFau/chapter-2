@@ -12,66 +12,117 @@ library(terra)
 library(sf)
 
 # raster data
-binary_settlement <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/binary_mask.tif")
+settlement_raw <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/buildings_raw_3035.tif")
 
 # polygone for the alpine area
 alpine_area <- vect("C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_area_corrected_geometry.shp")
 
-# Resolution reduction : for each 30m cells (env. 16 pixel), count the number of cell with a value 1  
-built_count <- aggregate(binary_settlement, fact = 4, fun = "sum", na.rm = TRUE)
+################################################################################
+#' Step 1 : proportion of built areas per km2 
+################################################################################
 
-# Filter and obtain a binary raster : give a 1 value when the 30 m cell is >= 4 
-binary_agg2 <- ifel(built_count >= 4, 1, NA)
-
-# Calculate density over 9 neighboring cells 
-nb <- focal(ifel(is.na(binary_agg2), 0, 1), w = 3, fun = "sum")
-
-# Filter : remove the cell that have not at least 2 built neighbours, this allow to remove the very isolated settlements
-binary_agg3 <- ifel(!is.na(binary_agg2) & nb >= 2, 1, NA)
-
-# Calculate distance and clip to the alps
-rdist <- distance(binary_agg3,
-                  filename  = "dist_to_buildings.tif",
-                  overwrite = TRUE)
-
-rdist_clip <- crop(rdist, alpine_area, mask = TRUE)
-plot(rdist_clip)
-
-# checks the values 
-quantile(values(rdist_clip, mat = FALSE),
-         probs = c(.5, .75, .9, .95, .99, 1), na.rm = TRUE)
-
-# export the raster croped to the alpine area
-writeRaster(rdist_clip, "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/distance to settlements 30 m cropped/dist_to_settlements_30m_croped.tif",
-            overwrite = TRUE,
-            datatype  = "INT4U",
-            gdal = c(
-              "COMPRESS=ZSTD",        
-              "PREDICTOR=2",          
-              "ZSTD_LEVEL=9",
-              "TILED=YES",            
-              "NUM_THREADS=ALL_CPUS",
-              "BIGTIFF=YES"           
-            )
+# rasterize the alpine polygon to attribute NA to pixels outside the Alps
+alps_mask <- rasterize(
+  alpine_area,
+  settlement_raw,
+  field = 1,
+  background = NA
 )
 
+# binary grid: NA outside Alps / 1 built cell /0 non-built cell within Alps
+settlement_01 <- ifel(
+  is.na(alps_mask),
+  NA,
+  ifel(is.na(settlement_raw), 0, 1)
+)
 
-#' ## Density of settlements map
-#' rasterize the alpine polygone to attribute NA to pixel outside the Alps and therefore not consider these pixels in the density calculation on the margin of the alps
-alps_mask     <- rasterize(alpine_area, built_count, field = 1, background = NA)
+# prepare a circular window of 1km2
 
-# binary grid with NA for cells outside the alps, 1 for built cell and 0 non-built cell within the alps
-settlement_01 <- ifel(is.na(alps_mask), NA,
-                      ifel(is.na(binary_agg2), 0, 1))   # cohérent avec la distance
+res_m <- res(settlement_01)[1]
 
-density_local <- focal(settlement_01, w = 33, fun = "mean",
-                       na.policy = "omit", na.rm = TRUE,
-                       filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/density_500m.tif",
-                       overwrite = TRUE,
-                       wopt = list(gdal = c("COMPRESS=ZSTD","PREDICTOR=3","ZSTD_LEVEL=9",
-                                            "TILED=YES","NUM_THREADS=ALL_CPUS","BIGTIFF=YES")))
+if (abs(res_m - 50) > 1e-6) {
+  warning(paste("La résolution n'est pas exactement 50 m :", res_m))
+}
 
-plot(density_local)
-plot(alpine_area, add = TRUE, border = "white", lwd = 0.5)
-quantile(values(density_local, mat = FALSE),
-         probs = c(.5, .75, .9, .95, .99, 1), na.rm = TRUE)
+radius_1km <- sqrt(1e6 / pi)
+
+k <- ceiling(radius_1km / res_m)
+d <- seq(-k, k) * res_m
+
+w_1km_circle <- outer(
+  d, d,
+  function(x, y) ifelse(x^2 + y^2 <= radius_1km^2, 1, NA)
+)
+
+window_area_km2 <- sum(!is.na(w_1km_circle)) * res_m^2 / 1e6
+print(window_area_km2)
+
+# calculate the proportion of built cells per km2
+
+built_prop_1km <- focal(
+  settlement_01,
+  w = w_1km_circle,
+  fun = "mean",
+  na.policy = "omit",
+  na.rm = TRUE,
+  filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/built_proportion_1km_window_50m.tif",
+  overwrite = TRUE,
+  wopt = list(
+    gdal = c(
+      "COMPRESS=ZSTD",
+      "PREDICTOR=3",
+      "ZSTD_LEVEL=9",
+      "TILED=YES",
+      "NUM_THREADS=ALL_CPUS",
+      "BIGTIFF=YES"
+    )
+  )
+)
+
+################################################################################
+#' ### Step 2 : Densité de bâtiments par fenêtre glissante de 1 km²
+################################################################################
+
+building_count_50m <- rast(
+  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_count_50m.tif"
+)
+
+building_count_50m <- mask(building_count_50m, alps_mask)
+
+building_sum_1km <- focal(
+  building_count_50m,
+  w = w_1km_circle,
+  fun = "sum",
+  na.policy = "omit",
+  na.rm = TRUE,
+  filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_count_sum_1km_window_50m.tif",
+  overwrite = TRUE,
+  wopt = list(
+    gdal = c(
+      "COMPRESS=ZSTD",
+      "PREDICTOR=3",
+      "ZSTD_LEVEL=9",
+      "TILED=YES",
+      "NUM_THREADS=ALL_CPUS",
+      "BIGTIFF=YES"
+    )
+  )
+)
+
+building_density_1km <- building_sum_1km / window_area_km2
+
+writeRaster(
+  building_density_1km,
+  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_density_count_per_km2_1km_window_50m.tif",
+  overwrite = TRUE,
+  wopt = list(
+    gdal = c(
+      "COMPRESS=ZSTD",
+      "PREDICTOR=3",
+      "ZSTD_LEVEL=9",
+      "TILED=YES",
+      "NUM_THREADS=ALL_CPUS",
+      "BIGTIFF=YES"
+    )
+  )
+)
