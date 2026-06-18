@@ -2,8 +2,9 @@
 #' title: "Preparing Raster Data"
 #' author: "Louise Faure"
 #' date: 28.05.2026
-#' details: (i) reduce the resolution of the input raster, (ii) calculate distance to each cells, (iii) compute density of building map
-#' (iv) export each raster independently 
+#' details: ce script s'applique à la couche de bâtiment du jeu de données 
+#' Overture. Pour le calcul des densité issues du jeu de données Human Footprint 
+#' Settlement 2019, se référer à une version précédente du code. 
 #' ---   
 
 #' ## Preamble
@@ -19,110 +20,37 @@ alpine_area <- vect("C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_ar
 
 ################################################################################
 #' Step 1 : proportion of built areas per km2 
+#' 
+#' À partir du raster binaire corrigé du bâti à 50 m, nous avons d’abord utilisé 
+#' GDAL pour agréger les cellules à 100 m par moyenne, de façon à obtenir pour 
+#' chaque cellule de 100 m une proportion locale de bâti comprise entre 0 et 1. 
+#' Nous avons ensuite importé ce raster dans GRASS GIS, défini la région de 
+#' calcul avec g.region, puis appliqué r.neighbors avec method=average et un 
+#' fichier de pondération circulaire de taille 13 × 13 cellules. Cette fenêtre 
+#' représente approximativement un disque de 1 km² autour de chaque cellule 
+#' focale. Le résultat exporté avec r.out.gdal est un raster à 100 m indiquant,
+#'  pour chaque cellule, la proportion moyenne de bâti dans son voisinage 
+#' d’environ 1 km².
 ################################################################################
 
-# rasterize the alpine polygon to attribute NA to pixels outside the Alps
-alps_mask <- rasterize(
-  alpine_area,
-  settlement_raw,
-  field = 1,
-  background = NA
-)
-
-# binary grid: NA outside Alps / 1 built cell /0 non-built cell within Alps
-settlement_01 <- ifel(
-  is.na(alps_mask),
-  NA,
-  ifel(is.na(settlement_raw), 0, 1)
-)
-
-# prepare a circular window of 1km2
-
-res_m <- res(settlement_01)[1]
-
-if (abs(res_m - 50) > 1e-6) {
-  warning(paste("La résolution n'est pas exactement 50 m :", res_m))
-}
-
-radius_1km <- sqrt(1e6 / pi)
-
-k <- ceiling(radius_1km / res_m)
-d <- seq(-k, k) * res_m
-
-w_1km_circle <- outer(
-  d, d,
-  function(x, y) ifelse(x^2 + y^2 <= radius_1km^2, 1, NA)
-)
-
-window_area_km2 <- sum(!is.na(w_1km_circle)) * res_m^2 / 1e6
-print(window_area_km2)
-
-# calculate the proportion of built cells per km2
-
-built_prop_1km <- focal(
-  settlement_01,
-  w = w_1km_circle,
-  fun = "mean",
-  na.policy = "omit",
-  na.rm = TRUE,
-  filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/built_proportion_1km_window_50m.tif",
-  overwrite = TRUE,
-  wopt = list(
-    gdal = c(
-      "COMPRESS=ZSTD",
-      "PREDICTOR=3",
-      "ZSTD_LEVEL=9",
-      "TILED=YES",
-      "NUM_THREADS=ALL_CPUS",
-      "BIGTIFF=YES"
-    )
-  )
-)
 
 ################################################################################
 #' ### Step 2 : Densité de bâtiments par fenêtre glissante de 1 km²
+#' 
+#' La densité de bâtiments a été calculée indépendamment de la taille des 
+#' polygones bâtis afin que chaque bâtiment contribue de manière équivalente à 
+#' la mesure d’anthropisation. Pour cela, chaque polygone de bâtiment issu 
+#' d’Overture Maps a d’abord été converti en un point représentatif situé à 
+#' l’intérieur de son emprise. Ces points ont ensuite été rasterisés sur une 
+#' grille de 100 m en utilisant une opération additive, de sorte que chaque 
+#' cellule contienne le nombre de bâtiments dont le point représentatif y tombe.
+#'  Le raster de comptage a ensuite été importé dans GRASS GIS, où une somme 
+#'  glissante a été calculée avec `r.neighbors` à l’aide d’une fenêtre circulaire 
+#'  représentant approximativement 1 km². Afin de corriger les effets de bord du
+#'   masque alpin, une seconde somme glissante a été appliquée à un raster 
+#'   binaire indiquant les cellules valides à l’intérieur des Alpes. La densité 
+#'   finale a été obtenue en divisant le nombre de bâtiments présents dans la 
+#'   fenêtre par la surface alpine effectivement disponible dans cette même 
+#'   fenêtre, exprimée en km².
+
 ################################################################################
-
-building_count_50m <- rast(
-  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_count_50m.tif"
-)
-
-building_count_50m <- mask(building_count_50m, alps_mask)
-
-building_sum_1km <- focal(
-  building_count_50m,
-  w = w_1km_circle,
-  fun = "sum",
-  na.policy = "omit",
-  na.rm = TRUE,
-  filename = "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_count_sum_1km_window_50m.tif",
-  overwrite = TRUE,
-  wopt = list(
-    gdal = c(
-      "COMPRESS=ZSTD",
-      "PREDICTOR=3",
-      "ZSTD_LEVEL=9",
-      "TILED=YES",
-      "NUM_THREADS=ALL_CPUS",
-      "BIGTIFF=YES"
-    )
-  )
-)
-
-building_density_1km <- building_sum_1km / window_area_km2
-
-writeRaster(
-  building_density_1km,
-  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/building_density_count_per_km2_1km_window_50m.tif",
-  overwrite = TRUE,
-  wopt = list(
-    gdal = c(
-      "COMPRESS=ZSTD",
-      "PREDICTOR=3",
-      "ZSTD_LEVEL=9",
-      "TILED=YES",
-      "NUM_THREADS=ALL_CPUS",
-      "BIGTIFF=YES"
-    )
-  )
-)
