@@ -4,7 +4,9 @@
 #' date: 28.05.2026
 #' details: ce script s'applique à la couche de bâtiment du jeu de données 
 #' Overture. Pour le calcul des densité issues du jeu de données Human Footprint 
-#' Settlement 2019, se référer à une version précédente du code. 
+#' Settlement 2019, se référer à une version précédente du code. Nous n'utilisons
+#' plus le jeu de données Human Footprint Settlement 2019 car des pixels identifié
+#' bâtiments sont présents dans des zones sans bâtiments par comparaison à OSM.
 #' ---   
 
 #' ## Preamble
