@@ -31,10 +31,7 @@ geo <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/geoid
 dem <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
 
 # raster layers
-distance_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/distance to settlements 30 m cropped/dist_to_settlements_30m_croped.tif")
-density_settlement <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_settlement_km2_m/density_settlement_km2_meters_crs.tif")
-density_pop_km2 <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_pop_km2_m/density_pop_km2_meters_crs.tif")
-landcover <- terra::rast("C:/Users/lfaure7/OneDrive/THESE/Conférences/Sempach workshop/Donnees/Landscape layers/CLC_longlat_10m.tif")
+human_footprint <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
 
 
 # emigration dates and golden eagle data
@@ -195,8 +192,7 @@ dispersal_data %>%
 ################################################################################
 
 
-hfi_masked <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/Human footprint index/human_footprint_index.tif")
-crs_hfi    <- terra::crs(hfi_masked)
+crs_hfi    <- terra::crs(human_footprint)
 
 # --- 3a : project GPS points --------------------------------------------------
 pts_sf <- dispersal_data %>%
@@ -207,7 +203,7 @@ pts_sf <- dispersal_data %>%
 pts_vect <- terra::vect(pts_sf)
 
 # --- 3b : point-level covariates (no buffer, fast) ---------------------------
-dispersal_data$hfi             <- terra::extract(hfi_masked,         pts_vect)[, 2]
+dispersal_data$hfi             <- terra::extract(human_footprint,         pts_vect)[, 2]
 dispersal_data$dist_settlement <- terra::extract(distance_settlement, pts_vect)[, 2]
 dispersal_data$dens_settlement <- terra::extract(density_settlement,  pts_vect)[, 2]
 dispersal_data$dens_pop_km2    <- terra::extract(density_pop_km2,     pts_vect)[, 2]
@@ -225,15 +221,15 @@ buffers_1km  <- sf::st_buffer(pts_sf, dist = 1000)
 
 message("Extracting max HFI in 100m buffers...")
 dispersal_data$hfi_max_100m <- exactextractr::exact_extract(
-  hfi_masked, buffers_100m, fun = "max", progress = FALSE)
+  human_footprint, buffers_100m, fun = "max", progress = FALSE)
 
 message("Extracting max HFI in 500m buffers...")
 dispersal_data$hfi_max_500m <- exactextractr::exact_extract(
-  hfi_masked, buffers_500m, fun = "max", progress = FALSE)
+  human_footprint, buffers_500m, fun = "max", progress = FALSE)
 
 message("Extracting max HFI in 1km buffers...")
 dispersal_data$hfi_max_1km <- exactextractr::exact_extract(
-  hfi_masked, buffers_1km, fun = "max", progress = FALSE)
+  human_footprint, buffers_1km, fun = "max", progress = FALSE)
 
 # --- 3d : define proximity threshold ------------------------------------------
 #
@@ -242,7 +238,7 @@ dispersal_data$hfi_max_1km <- exactextractr::exact_extract(
 # eagles already avoid humans, so their HFI distribution is not representative
 # of what "high HFI" means in the Alps.
 
-hfi_q75 <- terra::global(hfi_masked, fun = quantile,
+hfi_q75 <- terra::global(human_footprint, fun = quantile,
                          probs = 0.75, na.rm = TRUE)[[1]]
 message(sprintf("HFI landscape Q75 = %.4f (used as near-human threshold)", hfi_q75))
 
@@ -322,95 +318,8 @@ message(sprintf("Thinning: %d -> %d points (%.1f%% retained)",
                 nrow(dispersal_sf_full), nrow(dispersal_thinned),
                 100 * nrow(dispersal_thinned) / nrow(dispersal_sf_full)))
 
-saveRDS(dispersal_data,    "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_data_full.rds")
-saveRDS(dispersal_thinned, "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_thinned.rds")
-
-
-# second filtre based on building locations
-dispersal_thinned <- readRDS("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_thinned.rds")
-
-library(sf)
-library(dplyr)
-
-library(sf)
-
-# bbox du polygone des Alpes en CRS84 (le CRS natif du fichier Overture)
-alpes <- sf::st_read("C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_area_corrected_geometry.shp")
-alpes_wgs84 <- sf::st_transform(alpes, "OGC:CRS84")
-bb <- sf::st_bbox(alpes_wgs84)
-
-# lecture filtrée : seuls les bâtiments dans le bbox sont chargés
-# wkt_filter utilise l'index spatial du gpkg -> ne lit pas tout le fichier
-bbox_wkt <- sf::st_as_text(sf::st_as_sfc(bb))
-
-buildings_bbox <- sf::st_read(
-  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/overture_buildings_alps.gpkg",
-  wkt_filter = bbox_wkt
-)
-
-# puis clip exact au polygone et reprojection
-buildings_alpes <- buildings_bbox %>%
-  sf::st_intersection(sf::st_union(alpes_wgs84)) %>%
-  sf::st_transform(3035)
-
-sf::st_write(buildings_alpes,
-             "C:/Users/lfaure7/Desktop/buildings_alpes_3035.gpkg",
-             delete_dsn = TRUE)
-
-# --- préparer les points near_human ------------------------------------------
-# on travaille sur les points déjà retenus à 100m et 500m
-near_pts <- dispersal_thinned %>%
-  dplyr::filter(near_human_100m | near_human_500m) %>%
-  sf::st_as_sf(coords = c("location.long", "location.lat"),
-               crs = 4326, remove = FALSE) %>%
-  sf::st_transform(3035)
-
-# --- compter les bâtiments Overture dans un buffer autour de chaque point -----
-# buffer de comptage : à définir selon ce que tu considères "à proximité"
-# ici 100m pour rester cohérent avec ton échelle la plus fine
-buf_count_r <- 100
-
-near_buffers <- sf::st_buffer(near_pts, dist = buf_count_r)
-
-# st_intersects retourne, pour chaque buffer, les indices des bâtiments
-# qui l'intersectent — la longueur de chaque élément = nombre de bâtiments
-intersections <- sf::st_intersects(near_buffers, buildings_3035)
-near_pts$n_buildings <- lengths(intersections)
-
-# inspecter la distribution du nombre de bâtiments
-summary(near_pts$n_buildings)
-hist(near_pts$n_buildings, breaks = 50,
-     main = "Nombre de bâtiments Overture dans un buffer de 100m",
-     xlab = "n bâtiments")
-
-# --- appliquer le seuil -------------------------------------------------------
-# seuil minimum de bâtiments pour considérer le point comme "vraiment anthropisé"
-# n_buildings == 0 : pixel HFI mal classé (aucun bâtiment réel)
-# n_buildings < 5  : hameau isolé / fermes groupées (à décider)
-min_buildings <- 5   # ajuster après inspection de l'histogramme
-
-near_pts_validated <- near_pts %>%
-  dplyr::mutate(
-    near_human_validated = n_buildings >= min_buildings
-  )
-
-# combien de points survivent à la validation ?
-near_pts_validated %>%
-  sf::st_drop_geometry() %>%
-  dplyr::summarise(
-    n_before        = n(),
-    n_after         = sum(near_human_validated),
-    pct_retained    = round(100 * n_after / n_before, 1),
-    n_ghost_pixels  = sum(n_buildings == 0),         # pixels mal classés
-    n_hamlets       = sum(n_buildings > 0 & n_buildings < min_buildings)
-  ) %>% print()
-
-
-
-
-
-
-
+saveRDS(dispersal_data,    "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_data_full_Ov.rds")
+saveRDS(dispersal_thinned, "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_thinned_Ov.rds")
 
 
 ################################################################################
@@ -425,6 +334,11 @@ behavior_colors <- c(
   "fast flight at low elevation"            = "#e07b39",
   "fast commuting flight at high elevation" = "#c0392b"
 )
+
+# Remove final parenthetical suffix from individual names in plot labels
+clean_individual_name <- function(x) {
+  gsub("\\s*\\([^)]*\\)\\s*$", "", x)
+}
 
 behavior_near <- dispersal_thinned %>%
   dplyr::filter(!is.na(behavior_refined)) %>%
@@ -455,28 +369,85 @@ p_composition <- ggplot(behavior_composition,
   theme_minimal(base_size = 11)
 print(p_composition)
 
+
+# compile les résultats par individus
 behavior_individual <- behavior_near %>%
   dplyr::group_by(individual.local.identifier, threshold, behavior_refined) %>%
   dplyr::summarise(n = n(), .groups = "drop") %>%
   dplyr::group_by(individual.local.identifier, threshold) %>%
   dplyr::mutate(pct = 100 * n / sum(n))
 
-p_individual <- ggplot(behavior_individual,
-                       aes(x    = reorder(individual.local.identifier, pct),
-                           y    = pct,
-                           fill = behavior_refined)) +
+# Keep only GPS fixes near anthropised areas at ≤ 100 m
+behavior_near_100m <- dispersal_thinned %>%
+  dplyr::filter(
+    !is.na(behavior_refined),
+    near_human_100m %in% TRUE
+  )
+
+# Compute behavioral composition per individual
+behavior_individual_100m <- behavior_near_100m %>%
+  dplyr::group_by(individual.local.identifier, behavior_refined) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::group_by(individual.local.identifier) %>%
+  dplyr::mutate(pct = 100 * n / sum(n)) %>%
+  dplyr::ungroup()
+
+# Keep only individuals with at least 30 retained GPS fixes at ≤ 100 m
+individuals_min30_100m <- behavior_near_100m %>%
+  dplyr::count(individual.local.identifier, name = "n_retained") %>%
+  dplyr::filter(n_retained >= 30) %>%
+  dplyr::pull(individual.local.identifier)
+
+behavior_individual_100m <- behavior_individual_100m %>%
+  dplyr::filter(individual.local.identifier %in% individuals_min30_100m)
+
+# Order individuals by proportion of overnight roosting
+individual_order <- behavior_individual_100m %>%
+  dplyr::group_by(individual.local.identifier) %>%
+  dplyr::summarise(
+    pct_overnight_roosting = sum(
+      pct[behavior_refined == "overnight roosting"],
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(pct_overnight_roosting) %>%
+  dplyr::pull(individual.local.identifier)
+
+behavior_individual_100m <- behavior_individual_100m %>%
+  dplyr::mutate(
+    individual.local.identifier = factor(
+      individual.local.identifier,
+      levels = individual_order
+    )
+  )
+
+# Plot for 100m 
+p_individual_100m <- ggplot(
+  behavior_individual_100m,
+  aes(
+    x = individual.local.identifier,
+    y = pct,
+    fill = behavior_refined
+  )
+) +
   geom_col(position = "stack") +
-  facet_wrap(~ threshold, ncol = 1) +
   coord_flip() +
-  scale_fill_manual(values = behavior_colors) +
-  labs(x     = "Individual",
-       y     = "% of GPS fixes near anthropised areas",
-       fill  = "Behavior",
-       title = "Individual variation in behavioral composition near humans") +
+  scale_x_discrete(labels = clean_individual_name) +
+  scale_fill_manual(
+    values = behavior_colors,
+    drop = FALSE
+  ) +
+  labs(
+    x = "Individual",
+    y = "% of GPS fixes near anthropised areas",
+    fill = "Behavior",
+    title = "Individual variation in behavioral traits expressed near human-dominated areas",
+    subtitle = "GPS fixes within ≤ 100 m of artificial areas; individuals ordered by overnight roosting"
+  ) +
   theme_minimal(base_size = 11)
-print(p_individual)
 
-
+print(p_individual_100m)
 
 # export near-human points (≤ 100m) as shapefile for QGIS inspection
 dispersal_thinned %>%
@@ -493,129 +464,233 @@ dispersal_thinned %>%
                delete_dsn = TRUE)
 
 
+# Plot for 500m 
+# Keep only GPS fixes near anthropised areas at ≤ 500 m
+behavior_near_500m <- dispersal_thinned %>%
+  dplyr::filter(
+    !is.na(behavior_refined),
+    near_human_500m %in% TRUE
+  )
 
+# Compute behavioral composition per individual
+behavior_individual_500m <- behavior_near_500m %>%
+  dplyr::group_by(individual.local.identifier, behavior_refined) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::group_by(individual.local.identifier) %>%
+  dplyr::mutate(pct = 100 * n / sum(n)) %>%
+  dplyr::ungroup()
+
+# Keep only individuals with at least 30 retained GPS fixes at ≤ 500 m
+individuals_min30_500m <- behavior_near_500m %>%
+  dplyr::count(individual.local.identifier, name = "n_retained") %>%
+  dplyr::filter(n_retained >= 30) %>%
+  dplyr::pull(individual.local.identifier)
+
+behavior_individual_500m <- behavior_individual_500m %>%
+  dplyr::filter(individual.local.identifier %in% individuals_min30_500m)
+
+# Order individuals by proportion of overnight roosting
+individual_order_500m <- behavior_individual_500m %>%
+  dplyr::group_by(individual.local.identifier) %>%
+  dplyr::summarise(
+    pct_overnight_roosting = sum(
+      pct[behavior_refined == "overnight roosting"],
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(pct_overnight_roosting) %>%
+  dplyr::pull(individual.local.identifier)
+
+behavior_individual_500m <- behavior_individual_500m %>%
+  dplyr::mutate(
+    individual.local.identifier = factor(
+      individual.local.identifier,
+      levels = individual_order_500m
+    )
+  )
+
+# Plot for 500m
+p_individual_500m <- ggplot(
+  behavior_individual_500m,
+  aes(
+    x = individual.local.identifier,
+    y = pct,
+    fill = behavior_refined
+  )
+) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  scale_x_discrete(labels = clean_individual_name) +
+  scale_fill_manual(
+    values = behavior_colors,
+    drop = FALSE
+  ) +
+  labs(
+    x = "Individual",
+    y = "% of GPS fixes near anthropised areas",
+    fill = "Behavior",
+    title = "Individual variation in behavioral traits expressed near human dominated areas",
+    subtitle = "GPS fixes within ≤ 500 m of anthropised areas; individuals ordered by overnight roosting"
+  ) +
+  theme_minimal(base_size = 11)
+
+print(p_individual_500m)
 
 
 ################################################################################
 #' ### ANNEX 1 : correlation coefficent for anthropogenic features
 ################################################################################
 
-library(terra)
-library(sf)
-library(magrittr)
+# load raster data
+distance_settlement <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/distance_to_building_m_3035.tif")
+density_settlement <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/building_density_count_per_km2_100m_grass.tif")
+proportion_building <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/built_proportion_1km_window_100m_grass.tif")
+density_pop_km2 <- rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/density-resident-pop-km2/density_pop_km2_m/density_pop_km2_meters_crs.tif")
 
-# Raster de référence : définit la grille cible
-ref <- distance_settlement
+# Remove negative distances
+distance_settlement <- ifel(distance_settlement < 0, NA, distance_settlement)
 
-# Reprojection / rééchantillonnage sur la grille de référence
-# method = "bilinear" pour les valeurs continues
-density_settlement_r <- terra::project(
-  density_settlement,
-  ref,
-  method = "bilinear"
-)
+# Selection of reference grid at 100m resolution and reprojection of distance to
+# settlement raster
+ref <- proportion_building
 
-density_pop_km2_r <- terra::project(
+# aggregation of distance to settlement and population density at 100m resolution
+density_pop_km2_r <- project(
   density_pop_km2,
   ref,
   method = "bilinear"
 )
 
-built_prop_1km_r <- terra::project(
-  built_prop_1km,
+distance_settlement_r <- project(
+  distance_settlement,
   ref,
   method = "bilinear"
 )
 
-# Noms
-names(distance_settlement)   <- "dist_settlement"
-names(density_settlement_r)  <- "dens_settlement"
-names(density_pop_km2_r)     <- "dens_pop_km2"
-names(built_prop_1km_r)      <- "built_prop"
+proportion_building_r <- ref
 
-# Corrélations
-samp <- terra::spatSample(
-  c(
-    distance_settlement,
-    density_settlement_r,
-    density_pop_km2_r,
-    built_prop_1km_r
-  ),
-  size = 10000,
-  method = "random",
-  na.rm = TRUE
+names(distance_settlement_r)   <- "dist_settlement_m"
+names(density_settlement_r)    <- "dens_building_km2"
+names(density_pop_km2_r)       <- "dens_pop_km2"
+names(proportion_building_r)   <- "built_prop_1km"
+
+# Correlation matrix of anthropogenic features of the landscape
+corr_stack <- c(
+  distance_settlement_r,
+  density_settlement_r,
+  density_pop_km2_r,
+  proportion_building_r
 )
 
-cor(samp, method = "spearman")
+names(corr_stack) <- c(
+  "dist_settlement_m",
+  "dens_building_km2",
+  "dens_pop_km2",
+  "built_prop_1km"
+)
 
+set.seed(123)
+
+samp_corr <- spatSample(
+  corr_stack,
+  size = 100000,
+  method = "random",
+  na.rm = TRUE,
+  as.df = TRUE
+)
+
+cor_spearman <- cor(
+  samp_corr,
+  method = "spearman",
+  use = "complete.obs"
+)
+
+print(cor_spearman)
+
+# Results ######################################################################
+#'                        dist_settlement_m dens_building_km2 dens_pop_km2 built_prop_1km
+#' dist_settlement_m         1.0000000        -0.8720563   -0.7197879     -0.8841070
+#' dens_building_km2        -0.8720563         1.0000000    0.8444852      0.9894498
+#' dens_pop_km2             -0.7197879         0.8444852    1.0000000      0.8470960
+#' built_prop_1km           -0.8841070         0.9894498    0.8470960      1.0000000
+#' #############################################################################
 
 
 
 ################################################################################
-#' ### ANNEX 2 : prepare Human footprint index 
+#' ### ANNEX 2 : prepare the human footprint index
 ################################################################################
 
-# Transformations log pour réduire l'influence des valeurs extrêmes
-dens_s_log    <- log1p(density_settlement_r)
-dens_p_log    <- log1p(density_pop_km2_r)
-built_prop_log <- log1p(built_prop_1km_r)
+# log
+dens_building_log <- log1p(density_settlement_r)
+dens_pop_log      <- log1p(density_pop_km2_r)
+built_prop_trans  <- proportion_building_r
 
-# Normalisation robuste entre 0 et 1
-normalize_robust <- function(r, p_low = 0.01, p_high = 0.99) {
-  qs <- terra::global(
-    r,
-    fun = function(x, ...) {
-      quantile(x, probs = c(p_low, p_high), na.rm = TRUE)
-    },
-    na.rm = TRUE
-  )
+names(dens_building_log) <- "log1p_dens_building_km2"
+names(dens_pop_log)      <- "log1p_dens_pop_km2"
+names(built_prop_trans)  <- "built_prop_1km"
+
+# normalisation
+normalize_robust <- function(r, name_out, p_low = 0.01, p_high = 0.99) {
   
-  q_low  <- as.numeric(qs[1, 1])
-  q_high <- as.numeric(qs[1, 2])
+  set.seed(123)
+  
+  vals <- spatSample(
+    r,
+    size = min(1000000, ncell(r)),
+    method = "random",
+    na.rm = TRUE,
+    as.df = TRUE
+  )[[1]]
+  
+  q_low  <- as.numeric(quantile(vals, probs = p_low,  na.rm = TRUE))
+  q_high <- as.numeric(quantile(vals, probs = p_high, na.rm = TRUE))
+  
+  message(name_out, " : q", p_low, " = ", q_low,
+          " ; q", p_high, " = ", q_high)
   
   if (!is.finite(q_low) || !is.finite(q_high) || q_high <= q_low) {
-    stop("Normalisation impossible : quantiles invalides.")
+    stop(paste("Normalisation impossible pour", name_out))
   }
   
   out <- (r - q_low) / (q_high - q_low)
   out <- ifel(out < 0, 0, ifel(out > 1, 1, out))
   
+  names(out) <- name_out
+  
   return(out)
 }
 
-dens_s_norm     <- normalize_robust(dens_s_log)
-dens_p_norm     <- normalize_robust(dens_p_log)
-built_prop_norm <- normalize_robust(built_prop_log)
+dens_building_norm <- normalize_robust(
+  dens_building_log,
+  name_out = "dens_building_norm"
+)
 
-# HFI principal sans distance au bâtiment
-hfi <- (dens_s_norm + dens_p_norm + built_prop_norm) / 3
+dens_pop_norm <- normalize_robust(
+  dens_pop_log,
+  name_out = "dens_pop_norm"
+)
+
+built_prop_norm <- normalize_robust(
+  built_prop_trans,
+  name_out = "built_prop_norm"
+)
+
+# combine anthropogenic variables 
+hfi <- (dens_building_norm + dens_pop_norm + built_prop_norm) / 3
 names(hfi) <- "hfi"
 
-# Masque Alpes
-alpes_v <- terra::vect(
-  sf::st_read(
+# crop to the Alps extend 
+alpes_v <- vect(
+  st_read(
     "C:/Users/lfaure7/Desktop/COUCHES QGIS/alpine_area/alpine_area_corrected_geometry.shp",
     quiet = TRUE
   )
 )
 
-alpes_v <- terra::project(alpes_v, terra::crs(hfi))
+alpes_v <- project(alpes_v, crs(hfi))
 
-hfi_masked <- terra::crop(hfi, alpes_v) %>%
-  terra::mask(alpes_v)
-
-writeRaster(
-  hfi_masked,
-  "C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/hfi_density_pop_builtprop_50m.tif",
-  overwrite = TRUE,
-  wopt = list(
-    gdal = c(
-      "COMPRESS=ZSTD",
-      "PREDICTOR=3",
-      "ZSTD_LEVEL=9",
-      "TILED=YES",
-      "NUM_THREADS=ALL_CPUS",
-      "BIGTIFF=YES"
-    )
-  )
-)
+hfi_masked <- mask(hfi, alpes_v)
+names(hfi_masked) <- "hfi"
+plot(hfi_masked)
