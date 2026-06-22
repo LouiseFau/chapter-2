@@ -322,9 +322,14 @@ saveRDS(dispersal_data,    "C:/Users/lfaure7/Documents/git/chapter-2/preparation
 saveRDS(dispersal_thinned, "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_thinned_Ov.rds")
 
 
+
 ################################################################################
 #' ### STEP 4 : behavioral composition near human infrastructure
+#' 
+
+dispersal_thinned <- readRDS("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/dispersal_thinned_Ov.rds")
 ################################################################################
+
 
 # behavior_colors must match behavior_labels exactly
 behavior_colors <- c(
@@ -450,18 +455,315 @@ p_individual_100m <- ggplot(
 print(p_individual_100m)
 
 # export near-human points (≤ 100m) as shapefile for QGIS inspection
-dispersal_thinned %>%
-  dplyr::filter(near_human_100m) %>%
-  sf::st_as_sf(coords = c("location.long", "location.lat"),
-               crs    = 4326,
-               remove = FALSE) %>%
-  sf::st_transform(crs_hfi) %>%
-  dplyr::select(individual.local.identifier, timestamp,
-                behavior_refined, hfi, hfi_max_100m,
-                dist_settlement, dens_pop_km2,
-                location.long, location.lat) %>%
-  sf::st_write("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/comportement proche humains shape/behavior_close_humans.shp",
-               delete_dsn = TRUE)
+#dispersal_thinned %>%
+#  dplyr::filter(near_human_100m) %>%
+#  sf::st_as_sf(coords = c("location.long", "location.lat"),
+#               crs    = 4326,
+#               remove = FALSE) %>%
+#  sf::st_transform(crs_hfi) %>%
+#  dplyr::select(individual.local.identifier, timestamp,
+#                behavior_refined, hfi, hfi_max_100m,
+#                dist_settlement, dens_pop_km2,
+#                location.long, location.lat) %>%
+#  sf::st_write("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/resultats-intermediaire/behavioral_classification_near_humans/comportement proche humains shape/behavior_close_humans.shp",
+#               delete_dsn = TRUE)
+
+
+# Explore landcover composition for overnight roosting
+landcover <- terra::rast("C:/Users/lfaure7/OneDrive/THESE/Conférences/Sempach workshop/Donnees/Landscape layers/CLC_longlat_10m.tif")
+
+clc_lookup <- tibble::tibble(
+  class_code = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 253, 254, 255),
+  landcover_name = c(
+    "Sealed",
+    "Woody - needle leaved trees",
+    "Woody - broadleaved deciduous trees",
+    "Woody - broadleaved evergreen trees",
+    "Low-growing woody plants",
+    "Permanent herbaceous",
+    "Periodically herbaceous",
+    "Lichens and mosses",
+    "Non- and sparsely-vegetated",
+    "Water",
+    "Snow and ice",
+    "Coastal seawater buffer",
+    "Outside area",
+    "No data"
+  ),
+  landcover_level1 = c(
+    "Artificial surfaces",
+    "Forest",
+    "Forest",
+    "Forest",
+    "Shrubland / low woody vegetation",
+    "Herbaceous vegetation",
+    "Herbaceous vegetation",
+    "Sparse / non-vascular vegetation",
+    "Bare or sparsely vegetated",
+    "Water bodies",
+    "Snow and ice",
+    "Water bodies",
+    "Outside area",
+    "No data"
+  )
+)
+
+woody_classes <- c(
+  "Woody - needle leaved trees",
+  "Woody - broadleaved deciduous trees",
+  "Woody - broadleaved evergreen trees"
+)
+
+landcover_colors <- c(
+  "Sealed" = "snow4",
+  "Woody trees" = "#1b7837",
+  "Low-growing woody plants" = "#7fbf7b",
+  "Permanent herbaceous" = "#d9ef8b",
+  "Periodically herbaceous" = "#fee08b",
+  "Lichens and mosses" = "burlywood1",
+  "Non- and sparsely-vegetated" = "burlywood4",
+  "Water" = "#2b83ba",
+  "Snow and ice" = "#f7f7f7",
+  "Coastal seawater buffer" = "#80cdc1"
+)
+
+# Behaviors for which land-cover composition is extracted
+resting_behaviors <- c("overnight roosting", "short resting")
+
+# Keep only resting GPS fixes located near anthropised areas at ≤ 100 m
+resting_near_100m <- dispersal_thinned %>%
+  dplyr::filter(
+    !is.na(behavior_refined),
+    behavior_refined %in% resting_behaviors,
+    near_human_100m %in% TRUE,
+    !is.na(location.long),
+    !is.na(location.lat)
+  ) %>%
+  dplyr::mutate(fix_id = dplyr::row_number())
+
+# Convert GPS fixes to sf points in WGS84
+resting_points_sf <- sf::st_as_sf(
+  resting_near_100m,
+  coords = c("location.long", "location.lat"),
+  crs = 4326,
+  remove = FALSE
+)
+
+# Create 100 m buffers in a metric CRS
+# Use crs_hfi if it exists; otherwise use EPSG:3035.
+buffer_crs <- if (exists("crs_hfi")) crs_hfi else "EPSG:3035"
+
+resting_buffers_metric <- resting_points_sf %>%
+  sf::st_transform(buffer_crs) %>%
+  sf::st_buffer(dist = 100)
+
+# Convert buffers to terra vector and reproject to the land-cover raster CRS
+resting_buffers_v <- terra::vect(resting_buffers_metric)
+resting_buffers_v <- terra::project(resting_buffers_v, terra::crs(landcover))
+
+# Extract land-cover composition inside each 100 m buffer
+# exact = TRUE returns the fraction of each raster cell covered by the buffer.
+landcover_extract <- terra::extract(
+  landcover,
+  resting_buffers_v,
+  exact = TRUE,
+  ID = TRUE
+)
+
+# Identify land-cover and fractional-cover columns returned by terra::extract()
+landcover_col <- names(landcover)[1]
+
+fraction_col <- dplyr::case_when(
+  "fraction" %in% names(landcover_extract) ~ "fraction",
+  "weight"   %in% names(landcover_extract) ~ "weight",
+  TRUE ~ NA_character_
+)
+
+if (is.na(fraction_col)) {
+  stop("No fractional-cover column found. Check terra::extract(..., exact = TRUE) output.")
+}
+
+# Add GPS-fix metadata to extracted land-cover values
+buffer_lookup <- resting_near_100m %>%
+  dplyr::select(
+    fix_id,
+    individual.local.identifier,
+    behavior_refined
+  ) %>%
+  dplyr::mutate(ID = dplyr::row_number())
+
+# The ID returned by terra::extract() corresponds to the row number of
+# resting_buffers_v, hence to the row order of resting_near_100m.
+buffer_lookup <- resting_near_100m %>%
+  dplyr::mutate(ID = dplyr::row_number()) %>%
+  dplyr::select(
+    ID,
+    fix_id,
+    individual.local.identifier,
+    behavior_refined
+  )
+
+# Identify the raster-value column and the fractional-cover column
+landcover_col <- names(landcover)[1]
+
+fraction_col <- dplyr::case_when(
+  "fraction" %in% names(landcover_extract) ~ "fraction",
+  "weight"   %in% names(landcover_extract) ~ "weight",
+  TRUE ~ NA_character_
+)
+
+if (is.na(fraction_col)) {
+  stop("No fractional-cover column found. Check names(landcover_extract).")
+}
+
+# Join metadata and land-cover labels
+landcover_extract <- landcover_extract %>%
+  dplyr::left_join(buffer_lookup, by = "ID") %>%
+  dplyr::rename(
+    landcover_code = dplyr::all_of(landcover_col),
+    fraction       = dplyr::all_of(fraction_col)
+  ) %>%
+  dplyr::mutate(
+    landcover_code = as.integer(landcover_code)
+  ) %>%
+  dplyr::left_join(
+    clc_lookup,
+    by = c("landcover_code" = "class_code")
+  ) %>%
+  dplyr::filter(
+    !is.na(fix_id),
+    !is.na(behavior_refined),
+    !is.na(landcover_code),
+    !is.na(landcover_name),
+    !is.na(fraction),
+    fraction > 0,
+    !landcover_name %in% c("No data", "Outside area")
+  ) %>%
+  dplyr::mutate(
+    landcover_plot = dplyr::if_else(
+      landcover_name %in% woody_classes,
+      "Woody trees",
+      landcover_name
+    ),
+    landcover_plot = factor(
+      landcover_plot,
+      levels = names(landcover_colors)
+    ),
+    landcover_name   = factor(landcover_name),
+    landcover_level1 = factor(landcover_level1)
+  )
+
+# Optional check
+print(names(landcover_extract))
+print(unique(landcover_extract$landcover_name))
+
+
+# General land-cover composition for overnight roosting and short resting
+
+landcover_behavior_composition <- landcover_extract %>%
+  dplyr::group_by(
+    behavior_refined,
+    landcover_plot
+  ) %>%
+  dplyr::summarise(
+    fraction_sum = sum(fraction, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::group_by(behavior_refined) %>%
+  dplyr::mutate(
+    pct = 100 * fraction_sum / sum(fraction_sum, na.rm = TRUE)
+  ) %>%
+  dplyr::ungroup()
+
+p_landcover_resting <- ggplot(
+  landcover_behavior_composition,
+  aes(
+    x = behavior_refined,
+    y = pct,
+    fill = landcover_plot
+  )
+) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = landcover_colors, drop = FALSE) +
+  labs(
+    x = "Behavior",
+    y = "% of 100 m buffer area",
+    fill = "Land-cover",
+    title = "Land-cover composition around resting locations near humans",
+    subtitle = "Fractional land-cover composition within 100 m buffers"
+  ) +
+  theme_minimal(base_size = 11)
+
+print(p_landcover_resting)
+
+
+
+# Individual land-cover composition for overnight roosting only
+# Number of overnight roosting fixes per individual
+n_overnight_by_individual <- landcover_extract %>%
+  dplyr::filter(behavior_refined == "overnight roosting") %>%
+  dplyr::distinct(individual.local.identifier, fix_id) %>%
+  dplyr::count(
+    individual.local.identifier,
+    name = "n_overnight_roosting_fixes"
+  )
+
+landcover_individual_overnight <- landcover_extract %>%
+  dplyr::filter(
+    behavior_refined == "overnight roosting",
+    individual.local.identifier %in% individual_order
+  ) %>%
+  dplyr::group_by(
+    individual.local.identifier,
+    landcover_plot
+  ) %>%
+  dplyr::summarise(
+    fraction_sum = sum(fraction, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::group_by(individual.local.identifier) %>%
+  dplyr::mutate(
+    pct_landcover = 100 * fraction_sum / sum(fraction_sum, na.rm = TRUE)
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::left_join(
+    n_overnight_by_individual,
+    by = "individual.local.identifier"
+  ) %>%
+  dplyr::mutate(
+    # This makes total bar height equal to the number of overnight roosting fixes.
+    n_fix_equivalent = n_overnight_roosting_fixes * pct_landcover / 100,
+    individual.local.identifier = factor(
+      individual.local.identifier,
+      levels = individual_order
+    )
+  )
+
+p_landcover_individual_overnight <- ggplot(
+  landcover_individual_overnight,
+  aes(
+    x = individual.local.identifier,
+    y = n_fix_equivalent,
+    fill = landcover_plot
+  )
+) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  scale_x_discrete(labels = clean_individual_name) +
+  scale_fill_manual(values = landcover_colors, drop = FALSE) +
+  labs(
+    x = "Individual",
+    y = "Number of overnight roosting fixes",
+    fill = "Land-cover",
+    title = "Land-cover composition of overnight roosting locations near humans",
+    subtitle = "GPS fixes within ≤ 100 m of anthropised areas; bar height reflects number of overnight roosting fixes"
+  ) +
+  theme_minimal(base_size = 11)
+
+print(p_landcover_individual_overnight)
+
+
+
 
 
 # Plot for 500m 
