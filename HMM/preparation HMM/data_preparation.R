@@ -2,10 +2,14 @@
 #' Title: Preparation of GPS data for HHM
 #' Authors : Louise Faure
 #' Date : 25.06.26
-#' Purpose : (1) create several dataset of various
-#' temporal scale, (2) classify behavior within these dataset, (3) extract 
-#' covariate for each temporal resolution at different scales
-#' #######################################################################
+#' Purpose : 
+#' (1) filter location to the first fifteen weeks of dispersal, 
+#' (2) classify behaviours,
+#' (3) thin the data at two temporal resolution (20min and 60min) and split into
+#' burst,
+#' (4) extract environmental covariates at the two temporal scale and within 
+#' three different buffers
+#' #############################################################################
 
 
 
@@ -20,6 +24,8 @@ library(ggspatial)
 library(rnaturalearth)
 library(atlastools)
 library(data.table)
+library(EMbC)
+library(suncalc)
 
 # Load GPS data 
 output_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
@@ -49,7 +55,10 @@ rds_files_filtered  <- rds_files[rds_ids %in% emig_dates_filtered$individual.id]
 
 #' (i) keep only GPS locations within the first 15 weeks after emigration date
 #' (ii) compute height above ground (geoid + DEM correction)
+#' (iii) compute sunrise and sunset
 ################################################################################
+
+tz_loc <- "Europe/Zurich"
 
 dispersal_data <- lapply(rds_files_filtered, function(f) {
   
@@ -96,27 +105,179 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   df <- df[!is.na(df$height_above_ground) &
              df$height_above_ground > -200 &
              df$height_above_ground < 3000, ]
+  # If no data remain after height filtering, return an empty data frame
+  if (nrow(df) == 0) {
+    return(df)
+  }
+  
+  # Convert timestamp to local time.
+  # The date used for sunrise/sunset must be the local date, not the UTC date.
+  df$time_local <- lubridate::with_tz(df$timestamp, tz = tz_loc)
+  df$date_local <- as.Date(df$time_local)
+  
+  # Compute sunrise and sunset per row, using local date and GPS location
+  sun_times <- suncalc::getSunlightTimes(
+    data = data.frame(
+      date = df$date_local,
+      lat  = df$location.lat,
+      lon  = df$location.long
+    ),
+    keep = c("sunrise", "sunset"),
+    tz = tz_loc
+  )
+  
+  # Attach sunrise and sunset to the dataset
+  df$sunrise <- sun_times$sunrise
+  df$sunset  <- sun_times$sunset
+  
+  # Define daylight / night for each GPS point
+  df$is_daylight <- df$time_local >= df$sunrise & df$time_local <= df$sunset
+  df$is_night    <- !df$is_daylight
   
   df
+  
 })
 
 dispersal_data <- bind_rows(dispersal_data)
 rownames(dispersal_data) <- NULL
 
 
+################################################################################
+#' STEP 2 : EMbC behavioural classification on the full filtered dataset
+#'
+#' **Ref.** Garriga et al., 2016; Nourani et al. workflow
+#'
+#' (1) Classification through embc function
+#' (2) identification of overnight resting versus day resting sites
+################################################################################
+
+dispersal_data <- dispersal_data %>%
+  arrange(individual.local.identifier, timestamp)
+
+# Bivariate matrix: exactly two variables
+behavioural_classification <- data.frame(
+  ground.speed = as.numeric(dispersal_data$ground.speed),
+  height_above_ground = as.numeric(dispersal_data$height_above_ground)
+)
+
+complete_idx <- which(
+  complete.cases(behavioural_classification) &
+    is.finite(behavioural_classification$ground.speed) &
+    is.finite(behavioural_classification$height_above_ground)
+)
+
+behavioural_classification <- data.matrix(
+  behavioural_classification[complete_idx, c("ground.speed", "height_above_ground")]
+)
+
+# Call EMbC
+embc <- EMbC::embc(behavioural_classification)
+
+# Smooth EMbC classification, following the published workflow
+embc_smoothed <- EMbC::smth(embc, dlta = 0.7)
+
+# Attach raw and smoothed cluster labels to the full filtered dataset
+dispersal_data$behavior_cluster_raw <- NA_integer_
+dispersal_data$behavior_cluster <- NA_integer_
+
+dispersal_data$behavior_cluster_raw[complete_idx] <- embc@A
+dispersal_data$behavior_cluster[complete_idx] <- embc_smoothed@A
+
+# Check the four clusters
+cluster_summary_full <- dispersal_data %>%
+  filter(!is.na(behavior_cluster)) %>%
+  group_by(behavior_cluster) %>%
+  summarise(
+    speed_med  = median(ground.speed, na.rm = TRUE),
+    height_med = median(height_above_ground, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(behavior_cluster)
+
+print(cluster_summary_full)
+
+#' We obtain and decide to consider cluster 1 and 2 as terrestrial
+#' behavior_cluster speed_med height_med      n
+#'  1               0.12       13.5        166905
+#'  2               0.81       30.7        20355
+#'  3              10.1        34.1        33613
+#'  4              13.1       361.0         17154
+
+
+behavior_cluster_labels <- c(
+  "1" = "low_speed_low_height",
+  "2" = "low_speed_moderate_height",
+  "3" = "high_speed_low_height",
+  "4" = "high_speed_high_height"
+)
+
+terrestrial_clusters <- c(1, 2)
+
+dispersal_data <- dispersal_data %>%
+  dplyr::mutate(
+    behavior_cluster_name = dplyr::recode(
+      as.character(behavior_cluster),
+      !!!behavior_cluster_labels,
+      .default = NA_character_
+    ),
+    
+    behavior_broad = dplyr::case_when(
+      behavior_cluster %in% terrestrial_clusters ~ "terrestrial",
+      behavior_cluster %in% c(3, 4) ~ "flight",
+      TRUE ~ NA_character_
+    ),
+    
+    behavior_final = dplyr::case_when(
+      behavior_cluster %in% terrestrial_clusters & is_night ~ "overnight_resting",
+      behavior_cluster %in% terrestrial_clusters & is_daylight ~ "daily_resting",
+      behavior_cluster == 3 ~ "high_speed_low_height",
+      behavior_cluster == 4 ~ "high_speed_high_height",
+      TRUE ~ NA_character_
+    )
+  )
+
+# check final classification
+behavior_summary_full <- dispersal_data %>%
+  dplyr::count(
+    behavior_cluster,
+    behavior_cluster_name,
+    behavior_broad,
+    behavior_final
+  ) %>%
+  dplyr::group_by(behavior_broad) %>%
+  dplyr::mutate(prop_within_broad = n / sum(n)) %>%
+  dplyr::ungroup()
+
+print(behavior_summary_full)
+
+cluster_summary_named <- dispersal_data %>%
+  dplyr::filter(!is.na(behavior_cluster)) %>%
+  dplyr::group_by(behavior_cluster, behavior_cluster_name, behavior_broad) %>%
+  dplyr::summarise(
+    speed_med = median(ground.speed, na.rm = TRUE),
+    speed_mean = mean(ground.speed, na.rm = TRUE),
+    height_med = median(height_above_ground, na.rm = TRUE),
+    height_mean = mean(height_above_ground, na.rm = TRUE),
+    n = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(behavior_cluster)
+
+print(cluster_summary_named)
+
 
 ################################################################################
-#' Step 2. Data cleaning
+#' Step 3. Data cleaning
 #' 
-#' Goal:
-#   (i) inspect raw GPS sampling intervals;
-#   (ii) create one high-resolution dataset at 20 min;
-#   (iii) create one intermediate-resolution dataset at 60 min;
-#   (iv) split tracks into bursts
+#' (1) inspect raw GPS sampling intervals;
+#' (2) create one high-resolution dataset at 20 min;
+#' (3) create one intermediate-resolution dataset at 60 min;
+#' (4) split tracks into bursts
 ################################################################################
 
 
-# 2.1 Inspect raw GPS data ----
+# 3.1 Inspect raw GPS data ----
 # Create move2 object from dispersal_data
 locs <- dispersal_data %>%
   mutate(
@@ -186,7 +347,7 @@ quantile(
 #' because the 90% and 95% quantiles are around 60 minutes.
 
 
-# 2.2 Select observed gps points at 20-min and 60-min interavals using move2
+# 3.2 Select observed gps points at 20-min and 60-min interavals using move2
 high_res_min <- 20
 intermediate_res_min <- 60
 
@@ -229,7 +390,7 @@ thin_move2_interval <- function(locs,
   locs_thin_tbl
 }
 
-# 2.3 Split retained tracks into bursts ----
+# 3.3 Split retained tracks into bursts ----
 split_into_regular_bursts <- function(df,
                                       interval_min,
                                       tolerance_min,
@@ -295,7 +456,7 @@ split_into_regular_bursts <- function(df,
   df_burst
 }
 
-# 2.4 create 20-min and 60-min datasets ----
+# 3.4 create 20-min and 60-min datasets ----
 
 thin_20_tbl <- thin_move2_interval(
   locs = locs_3035,
@@ -325,7 +486,7 @@ regular_60_tbl <- split_into_regular_bursts(
   min_points_per_burst = min_points_per_burst
 )
 
-# 2.5 Control the dataset filtered ----
+# 3.5 Control the dataset filtered ----
 check_timing <- function(df) {
   
   df %>%
@@ -384,7 +545,7 @@ low_data_individuals <- summary_by_id %>%
 
 print(low_data_individuals)
 
-# 2.6 Export datasets ----
+# 3.6 Export datasets ----
 regular_20_sf <- sf::st_as_sf(
   regular_20_tbl,
   coords = c("x_3035", "y_3035"),
@@ -406,88 +567,3 @@ saveRDS(
 saveRDS(
   regular_60_sf,
   file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds"))
-
-
-#'##############################################################################
-#'Step 3 : behavioral classification 
-#' 
-#' ** Strategy**: (1) classify behaviors using embc function (2) sub classify 
-#' terrestrial behavior to distinguish between overnight encroachment and short 
-#' term resting 
-################################################################################
-
-# 3.1: EMbC classification ----
-input_vars   <- c("ground.speed", "height_above_ground")
-complete_idx <- which(complete.cases(dispersal_data[, input_vars]))
-bc_matrix    <- data.matrix(dispersal_data[complete_idx, input_vars])
-
-embc_fit      <- EMbC::embc(bc_matrix)
-embc_smoothed <- EMbC::smth(embc_fit, dlta = 0.7)
-
-# complete embc cluster with turning angles
-cluster_summary_extended <- dispersal_data[complete_idx, ] %>%
-  dplyr::mutate(behavior_cluster = embc_smoothed@A) %>%
-  dplyr::group_by(behavior_cluster) %>%
-  dplyr::summarise(
-    speed_med      = median(ground.speed,        na.rm = TRUE),
-    height_med     = median(height_above_ground, na.rm = TRUE),
-    turn_angle_med = median(abs(turn.angle),     na.rm = TRUE),
-    vert_speed_med = median(abs(vert.speed),     na.rm = TRUE),
-    n = n(), .groups = "drop")
-print(cluster_summary_extended)
-
-dispersal_data$behavior_cluster <- NA_integer_
-dispersal_data$behavior_cluster[complete_idx] <- embc_smoothed@A
-
-# adjust cluster ids below if cluster_summary shows a different ordering
-behavior_labels <- c("1" = "terrestrial",
-                     "2" = "low soaring",
-                     "3" = "fast flight at low elevation",
-                     "4" = "fast commuting flight at high elevation")
-
-dispersal_data <- dispersal_data %>%
-  dplyr::mutate(behavior = dplyr::recode(as.character(behavior_cluster),
-                                         !!!behavior_labels))
-
-# 3.2 : sub-classification of terrestrial position ----
-Before setting the time threshold at which we can defined a terrestrial position as
-an overnight roosting, explore the time lags between terrestrial position and justify your choice 
-timethreshold. 
-
-
-
-
-
-dispersal_data <- dispersal_data %>%
-  dplyr::arrange(individual.local.identifier, timestamp) %>%
-  dplyr::group_by(individual.local.identifier) %>%
-  dplyr::mutate(
-    is_terrestrial = !is.na(behavior) & behavior == "terrestrial",
-    bout_change    = is_terrestrial != dplyr::lag(is_terrestrial,
-                                                  default = first(is_terrestrial)),
-    bout_id        = cumsum(bout_change)) %>%
-  dplyr::ungroup()
-
-bout_durations <- dispersal_data %>%
-  dplyr::filter(is_terrestrial) %>%
-  dplyr::group_by(individual.local.identifier, bout_id) %>%
-  dplyr::summarise(
-    bout_duration_h = as.numeric(difftime(max(timestamp), min(timestamp),
-                                          units = "hours")),
-    n_fixes_bout    = n(), .groups = "drop")
-
-dispersal_data <- dispersal_data %>%
-  dplyr::left_join(
-    bout_durations %>%
-      dplyr::select(individual.local.identifier, bout_id, bout_duration_h),
-    by = c("individual.local.identifier", "bout_id")) %>%
-  dplyr::mutate(
-    behavior_refined = dplyr::case_when(
-      behavior == "terrestrial" & bout_duration_h >= 10 ~ "overnight roosting",
-      behavior == "terrestrial" & bout_duration_h <  10 ~ "short resting",
-      TRUE ~ behavior))
-
-dispersal_data %>%
-  dplyr::filter(is_terrestrial) %>%
-  dplyr::count(behavior_refined) %>%
-  print()
