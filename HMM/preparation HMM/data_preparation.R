@@ -37,8 +37,10 @@ dem <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretr
 # raster layers
 human_footprint <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
 
+
 # emigration dates and golden eagle data
 emig_dates <- readRDS("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/donnees/emigration dates/emigration_dates_20250417.rds")
+nest_site <- readRDS("~/git/chapter-2/preparation donnee aigle ssf/donnees/nest site location/nest_site_location/nest_site_location.rds")
 
 rds_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/donnees/no_burst_GE/no_burst_GE"
 rds_files <- tools::file_path_sans_ext(list.files(rds_dir, pattern = "\\.rds$", ignore.case = TRUE))
@@ -65,8 +67,7 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   id  <- as.numeric(gsub("_gpsNoDup_moveObj", "", f))
   obj <- readRDS(file.path(rds_dir, paste0(f, ".rds")))
   df  <- as.data.frame(obj)
-  
-  # filter column
+
   df <- df[, c("individual.local.identifier", "timestamp",
                "location.long", "location.lat",
                "height.above.ellipsoid", "ground.speed",
@@ -77,7 +78,7 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
   emig_dt <- emig_dates_filtered$dispersal_date[emig_dates_filtered$individual.id == id]
   
-  # retain only the first fifteen weeks of dispersal
+  # 1.0 Retain only the first fifteen weeks of dispersal ----
   df <- df[df$timestamp >= emig_dt &
              df$timestamp <= emig_dt + 105 * 24 * 3600, ]
   
@@ -85,7 +86,7 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   df$dispersal_date  <- emig_dt
   df$days_since_emig <- as.numeric(difftime(df$timestamp, emig_dt, units = "days"))
   
-  # calculate altitude (height above mean sea level) using the geoide
+  # 1.1 Calculate flight height by first using the geoide ----
   xy_ll <- as.matrix(df[, c("location.long", "location.lat")])
   N     <- terra::extract(geo, xy_ll)[, 1]
   
@@ -101,17 +102,18 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   # calculate flight height
   df$height_above_ground <- df$height_msl - df$dem_elevation
   
-  # filter the locations to remove all the point below -200m and above 3000m
+  # 1.2 Filter the locations with weird hights ----
   df <- df[!is.na(df$height_above_ground) &
              df$height_above_ground > -200 &
              df$height_above_ground < 3000, ]
+  
   # If no data remain after height filtering, return an empty data frame
   if (nrow(df) == 0) {
     return(df)
   }
   
-  # Convert timestamp to local time.
-  # The date used for sunrise/sunset must be the local date, not the UTC date.
+  # 1.3 Identify night vs day position ----
+  # Convert timestamp to local time
   df$time_local <- lubridate::with_tz(df$timestamp, tz = tz_loc)
   df$date_local <- as.Date(df$time_local)
   
@@ -133,6 +135,40 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   # Define daylight / night for each GPS point
   df$is_daylight <- df$time_local >= df$sunrise & df$time_local <= df$sunset
   df$is_night    <- !df$is_daylight
+  
+  # 1.4 Calculate age since emigration ----
+  df$age_since_emig_days <- as.numeric(
+    difftime(df$timestamp, emig_dt, units = "days")
+  )
+  
+  df$age_since_emig_weeks <- df$age_since_emig_days / 7
+  
+  # 1.5 Compute distance to nest site ----
+  pts_3035 <- sf::st_as_sf(
+    df,
+    coords = c("location.long", "location.lat"),
+    crs = 4326,
+    remove = FALSE
+  ) %>%
+    sf::st_transform(3035)
+  
+  # Keep projected GPS coordinates for later steps
+  xy_3035 <- sf::st_coordinates(pts_3035)
+  
+  df$x_3035 <- xy_3035[, 1]
+  df$y_3035 <- xy_3035[, 2]
+  
+  # Select nest site for the current individual
+  nest_i <- nest_site %>%
+    dplyr::filter(
+      as.character(individual.local.identifier) ==
+        as.character(df$individual.local.identifier[1])
+    )
+  
+  # Distance (in km) from each GPS point to the nest ----
+  df$distance_to_nest_km <- as.numeric(
+    sf::st_distance(pts_3035, nest_i)
+  ) / 1000
   
   df
   
@@ -567,3 +603,55 @@ saveRDS(
 saveRDS(
   regular_60_sf,
   file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds"))
+
+
+#'##############################################################################
+#' Step 4 : extract human footprint index around GPS locations
+#'
+#' (1) extract covariates values at three buffer size : 
+#' - hfi_mean_100m  = HFI value of the pixel containing the GPS point
+#' - hfi_mean_500m  = mean HFI of pixels within 500 m of that pixel
+#' - hfi_mean_1000m = mean HFI of pixels within 1000 m of that pixel
+#' (2) export the RDS file
+#'##############################################################################
+
+output_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
+
+# Terra parameters
+terra::terraOptions(threads = 5)
+
+# Function for covariate extraction
+hfi_crs <- terra::crs(human_footprint)
+
+extract_hfi <- function(df_sf,
+                        raster    = human_footprint,
+                        buffers_m = c(500, 1000)) {
+  
+  # Remove geometry, create a matrix for coordinates
+  df  <- as.data.frame(sf::st_drop_geometry(df_sf))
+  pts <- terra::vect(as.matrix(df[, c("x_3035", "y_3035")]),
+                     type = "points",
+                     crs  = "EPSG:3035")
+  
+  # Extraction of the HFI value below GPS points
+  pts_r        <- terra::project(pts, hfi_crs)         # alignement sur le CRS raster
+  df$hfi_point <- terra::extract(raster, pts_r, ID = FALSE)[, 1]
+  
+  # Buffer at 500m and 1000m, mean of the values
+  for (r in buffers_m) {
+    buf   <- terra::buffer(pts, width = r)             
+    buf_r <- terra::project(buf, hfi_crs)
+    val   <- terra::extract(raster, buf_r,
+                            fun = mean, na.rm = TRUE, ID = FALSE)[, 1]
+    df[[paste0("hfi_mean_", r, "m")]] <- val
+  }
+  
+  df
+}
+
+regular_20_hfi <- extract_hfi(regular_20_sf)
+regular_60_hfi <- extract_hfi(regular_60_sf)
+
+# save and export
+saveRDS(regular_20_hfi, file.path(output_dir, "GE_20_min_thinned_hfi.rds"))
+saveRDS(regular_60_hfi, file.path(output_dir, "GE_60_min_thinned_hfi.rds"))
