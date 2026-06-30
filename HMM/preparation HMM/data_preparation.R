@@ -1,4 +1,4 @@
-#' ####################################################################### 
+#' ############################################################################# 
 #' Title: Preparation of GPS data for HHM
 #' Authors : Louise Faure
 #' Date : 25.06.26
@@ -552,6 +552,10 @@ timing_summary <- bind_rows(
 )
 
 print(timing_summary)
+#' we obtain 
+#' resolution_min n_individuals n_points n_bursts n_valid_transitions median_dt_next_min p05_dt_next_min p95_dt_next_min min_dt_next_min max_dt_next_min
+#'           20            62   100865    10813              100865                 20            15.0            20.4              15              25
+#'           60            66    58521     6958               58521                 60            59.5            60.5              50              70
 
 # inspect individual differences
 summarise_by_individual <- function(df) {
