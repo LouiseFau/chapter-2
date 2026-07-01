@@ -346,25 +346,6 @@ print(model_comparison_all_20)
 #'##############################################################################
 #' ### Step 3 : plot the results
 #' This plot is inspired by Figure 4 in VonBank et al. (2023).
-#'
-#' Panels:
-#'   - Null model
-#'   - HFI point
-#'   - HFI 500m
-#'   - HFI 1000m
-#'
-#' Rows:
-#'   - To Aerial
-#'   - To Terrestrial
-#'
-#' Columns:
-#'   - From Aerial
-#'   - From Terrestrial
-#'
-#' Values:
-#'   HFI effect on transition log-odds.
-#'
-#' In the null model, all HFI effects are zero by definition.
 #'##############################################################################
 
 
@@ -531,12 +512,27 @@ print(p_hfi_transition_all_20)
 
 
 # 3.7 Save figure ----
-
 ggsave(
-  filename = "transition_hfi_effects_combined_20min.png",
+  filename = "transition_hfi_effects_combined_60min.png",
   plot = p_hfi_transition_all_20,
   width = 12,
   height = 4.5,
   dpi = 300
 )
 
+
+# hfi propensity
+summary(transition_model_all_20$hfi_mean_1000m)
+
+hist(
+  transition_model_all_20$hfi_mean_1000m,
+  breaks = 50,
+  main = "Distribution of HFI 1000 m in used transition data",
+  xlab = "HFI 1000 m"
+)
+
+quantile(
+  transition_model_all_20$hfi_mean_1000m,
+  probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1),
+  na.rm = TRUE
+)
