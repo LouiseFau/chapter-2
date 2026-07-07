@@ -21,6 +21,8 @@ library(dplyr)
 library(sf)
 library(move2)
 
+
+
 #' Step 0 : load the data ----
 output_dir <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnes filtree intermediaire"
 
@@ -68,22 +70,19 @@ acc_new_list <- lapply(new_files, function(f) {
   x[, source_dataset := "new_classification"]
   x[, source_file := basename(f)]
   
-  x
-})
+  x})
 
 acc_new <- data.table::rbindlist(
   acc_new_list,
   use.names = TRUE,
-  fill = TRUE
-)
+  fill = TRUE)
 
 
 # Merge
 acc_classified_all <- data.table::rbindlist(
   list(acc_old, acc_new),
   use.names = TRUE,
-  fill = TRUE
-)
+  fill = TRUE)
 
 acc_classified_all[, individualID := as.character(individualID)]
 acc_classified_all[, rf8fitted := as.character(rf8fitted)]
@@ -102,13 +101,11 @@ emig_filtered <- emig_dt[
   .(
     individual.local.identifier,
     dispersal_date
-  )
-]
+  )]
 
 emig_filtered <- unique(
   emig_filtered,
-  by = "individual.local.identifier"
-)
+  by = "individual.local.identifier")
 
 
 # 1.3 Join dispersal dates and retain first 15 weeks ----
@@ -123,8 +120,7 @@ acc_classified_all <- acc_classified_all[!is.na(dispersal_date)]
 acc_classified_all[
   ,
   age_days := as.numeric(
-    difftime(timestamp, dispersal_date, units = "days")
-  )]
+    difftime(timestamp, dispersal_date, units = "days"))]
 
 acc_classified_all[, age_weeks := age_days / 7]
 
@@ -139,6 +135,7 @@ saveRDS(
   file.path(output_dir, "acc_classified_first_15_weeks_all_individuals_merged_old_new.rds"),
   compress = "gzip"
 )
+
 
 
 
@@ -191,8 +188,7 @@ read_one_gps_move <- function(f) {
   # Ensure timestamp is POSIXct
   x[, timestamp := as.POSIXct(timestamp, tz = "UTC")]
   
-  x
-}
+  x}
 
 
 gps_by_file <- lapply(gps_files, read_one_gps_move)
@@ -201,9 +197,7 @@ names(gps_by_file) <- make.unique(
   vapply(
     gps_by_file,
     function(x) x$individual.local.identifier[1],
-    character(1)
-  )
-)
+    character(1)))
 
 
 
@@ -211,23 +205,19 @@ names(gps_by_file) <- make.unique(
 gps_raw_all <- data.table::rbindlist(
   gps_by_file,
   use.names = TRUE,
-  fill = TRUE
-)
+  fill = TRUE)
 
 gps_raw_all[
   emig_filtered,
   dispersal_date := i.dispersal_date,
-  on = "individual.local.identifier"
-]
+  on = "individual.local.identifier"]
 
 gps_raw_all <- gps_raw_all[!is.na(dispersal_date)]
 
 gps_raw_all[
   ,
   age_days := as.numeric(
-    difftime(timestamp, dispersal_date, units = "days")
-  )
-]
+    difftime(timestamp, dispersal_date, units = "days"))]
 
 gps_raw_all[, age_weeks := age_days / 7]
 
@@ -235,28 +225,24 @@ gps_15w <- gps_raw_all[
   age_days >= 0 &
     age_days < 105 &
     !is.na(location.long) &
-    !is.na(location.lat)
-]
+    !is.na(location.lat)]
 
 gps_15w[, timespan := data.table::as.IDate(timestamp)]
 
 # Keep only GPS individuals that also have ACC-classified behaviors
 gps_15w <- gps_15w[
-  individual.local.identifier %in% unique(acc_15w$individualID)
-]
+  individual.local.identifier %in% unique(acc_15w$individualID)]
 
 data.table::setorder(
   gps_15w,
   individual.local.identifier,
-  timestamp
-)
+  timestamp)
 
 # Remove exact duplicated GPS records.
 # This removes repeated records only when individual, timestamp and event.id are identical.
 gps_15w <- unique(
   gps_15w,
-  by = c("individual.local.identifier", "timestamp", "event.id")
-)
+  by = c("individual.local.identifier", "timestamp", "event.id"))
 
 # Create one unique GPS row identifier after all GPS filtering
 gps_15w[, gps_row_id := .I]
@@ -281,17 +267,14 @@ gps_points <- gps_15w[
     heading,
     dispersal_date,
     age_days,
-    age_weeks
-  )
-]
+    age_weeks)]
 
 gps_points[, join_time := gps_timestamp]
 
 data.table::setorder(
   gps_points,
   individual.local.identifier,
-  join_time
-)
+  join_time)
 
 
 #' Step 2.3: prepare ACC-classified bursts ----
@@ -309,23 +292,19 @@ acc_points <- acc_15w[
     pitchanimaltrack,
     burstmeanx,
     burstmeany,
-    burstmeanz
-  )
-]
+    burstmeanz )]
 
 acc_points <- acc_points[
   !is.na(individual.local.identifier) &
     !is.na(acc_timestamp) &
-    !is.na(rf8fitted)
-]
+    !is.na(rf8fitted)]
 
 acc_points[, join_time := acc_timestamp]
 
 data.table::setorder(
   acc_points,
   individual.local.identifier,
-  join_time
-)
+  join_time)
 
 
 #' Step 2.4: assign each ACC burst to the nearest GPS location ----
@@ -334,46 +313,37 @@ max_assignment_gap_min <- 60
 data.table::setkey(
   gps_points,
   individual.local.identifier,
-  join_time
-)
+  join_time)
 
 data.table::setkey(
   acc_points,
   individual.local.identifier,
-  join_time
-)
+  join_time)
 
 # For each ACC burst, find the nearest GPS point from the same individual.
 # The resulting table has one row per ACC burst.
 acc_nearest_gps <- gps_points[
   acc_points,
   on = .(individual.local.identifier, join_time),
-  roll = "nearest"
-]
+  roll = "nearest"]
 
 acc_nearest_gps[
   ,
   abs_time_diff_min := abs(
     as.numeric(
-      difftime(acc_timestamp, gps_timestamp, units = "mins")
-    )
-  )
-]
+      difftime(acc_timestamp, gps_timestamp, units = "mins")))]
 
 acc_nearest_gps[
   ,
   gps_assigned_60min := !is.na(gps_row_id) &
-    abs_time_diff_min <= max_assignment_gap_min
-]
+    abs_time_diff_min <= max_assignment_gap_min]
 
 acc_with_gps_60min <- acc_nearest_gps[
-  gps_assigned_60min == TRUE
-]
+  gps_assigned_60min == TRUE]
 
 acc_without_gps_60min <- acc_nearest_gps[
   is.na(gps_assigned_60min) |
-    gps_assigned_60min == FALSE
-]
+    gps_assigned_60min == FALSE]
 
 
 
@@ -382,28 +352,23 @@ acc_without_gps_60min <- acc_nearest_gps[
 #' Several ACC bursts can be assigned to the same GPS point.
 #' For a GPS-level trajectory, retain the ACC burst closest in time to the GPS fix.
 #' If two ACC bursts are equally close, retain the one with the highest RF probability.
-
 acc_with_gps_60min[
   ,
   pro_rf8fitted_order := data.table::fifelse(
     is.na(pro_rf8fitted),
     -Inf,
-    pro_rf8fitted
-  )
-]
+    pro_rf8fitted)]
 
 data.table::setorder(
   acc_with_gps_60min,
   gps_row_id,
   abs_time_diff_min,
-  -pro_rf8fitted_order
-)
+  -pro_rf8fitted_order)
 
 gps_behavior_from_acc <- acc_with_gps_60min[
   ,
   .SD[1],
-  by = gps_row_id
-]
+  by = gps_row_id]
 
 gps_behavior_from_acc <- gps_behavior_from_acc[
   ,
@@ -420,9 +385,7 @@ gps_behavior_from_acc <- gps_behavior_from_acc[
     pitchanimaltrack,
     burstmeanx,
     burstmeany,
-    burstmeanz
-  )
-]
+    burstmeanz)]
 
 
 #' Step 2.7: merge assigned behavior back to GPS locations ----
@@ -444,24 +407,20 @@ gps_beh_15w <- merge(
       heading,
       dispersal_date,
       age_days,
-      age_weeks
-    )
+      age_weeks)
   ],
   gps_behavior_from_acc,
   by = "gps_row_id",
-  all.x = TRUE
-)
+  all.x = TRUE)
 
 gps_beh_15w[
   ,
-  behavior_assigned := !is.na(rf8fitted)
-]
+  behavior_assigned := !is.na(rf8fitted)]
 
 data.table::setorder(
   gps_beh_15w,
   individual.local.identifier,
-  gps_timestamp
-)
+  gps_timestamp)
 
 
 #' Step 2.8: final GPS-level diagnostics ----
@@ -485,6 +444,7 @@ saveRDS(
   file.path(output_dir, "gps_with_nearest_acc_behavior_within_60min.rds"),
   compress = "gzip"
 )
+
 
 
 
@@ -521,8 +481,7 @@ locs <- step3_input %>%
     time_column = "timestamp",
     track_id_column = "individual.id",
     crs = 4326,
-    remove = FALSE
-  )
+    remove = FALSE)
 
 # Remove duplicate records with same individual and timestamp
 locs <- locs %>%
@@ -579,8 +538,7 @@ intermediate_tolerance_min <- 10
 min_points_per_burst <- 3
 
 format_interval_name <- function(interval_min) {
-  gsub("\\.", "p", paste0(interval_min, "min"))
-}
+  gsub("\\.", "p", paste0(interval_min, "min"))}
 
 
 #' Thin GPS data
@@ -682,33 +640,29 @@ thin_20_tbl <- thin_move2_interval(
   locs = locs_3035,
   interval_unit = "20 minutes",
   resolution_min = high_res_min,
-  resolution_label = "20min_high_resolution"
-)
+  resolution_label = "20min_high_resolution")
 
 thin_60_tbl <- thin_move2_interval(
   locs = locs_3035,
   interval_unit = "1 hour",
   resolution_min = intermediate_res_min,
-  resolution_label = "60min_intermediate_resolution"
-)
+  resolution_label = "60min_intermediate_resolution")
 
 regular_20_tbl <- split_into_regular_bursts(
   df = thin_20_tbl,
   interval_min = high_res_min,
   tolerance_min = high_res_tolerance_min,
-  min_points_per_burst = min_points_per_burst
-)
+  min_points_per_burst = min_points_per_burst)
 
 regular_60_tbl <- split_into_regular_bursts(
   df = thin_60_tbl,
   interval_min = intermediate_res_min,
   tolerance_min = intermediate_tolerance_min,
-  min_points_per_burst = min_points_per_burst
-)
+  min_points_per_burst = min_points_per_burst)
 
 
 
-#' Step 3.5 Control the filtered datasets ----
+#' Step 3.5a Control the filtered datasets ----
 check_timing <- function(df) {
   
   df %>%
@@ -757,8 +711,7 @@ summarise_by_individual <- function(df) {
 
 summary_by_id <- dplyr::bind_rows(
   summarise_by_individual(regular_20_tbl),
-  summarise_by_individual(regular_60_tbl)
-)
+  summarise_by_individual(regular_60_tbl))
 
 print(summary_by_id, n = 128)
 
@@ -861,9 +814,11 @@ saveRDS(regular_60_sf,
 
 
 
+
 #'------------------------------------------------------------------------------
 #' Step 4 : extract human footprint index around GPS locations
-#'
+#' 
+#' **Steps:**
 #' (1) extract covariates values at three buffer size : 
 #' - hfi_mean_100m  = HFI value of the pixel containing the GPS point
 #' - hfi_mean_500m  = mean HFI of pixels within 500 m of that pixel
@@ -871,41 +826,75 @@ saveRDS(regular_60_sf,
 #' (2) export the RDS file
 
 
-# Terra parameters
 terra::terraOptions(threads = 5)
 
-# Function for covariate extraction
-hfi_crs <- terra::crs(human_footprint)
-
+# Function for HFI extraction
 extract_hfi <- function(df_sf,
-                        raster    = human_footprint,
+                        raster = human_footprint,
                         buffers_m = c(500, 1000)) {
   
-  # Remove geometry, create a matrix for coordinates
-  df  <- as.data.frame(sf::st_drop_geometry(df_sf))
-  pts <- terra::vect(as.matrix(df[, c("x_3035", "y_3035")]),
-                     type = "points",
-                     crs  = "EPSG:3035")
+  # Keep attribute table without geometry
+  df <- as.data.frame(sf::st_drop_geometry(df_sf))
   
-  # Extraction of the HFI value below GPS points
-  pts_r        <- terra::project(pts, hfi_crs)         # alignement sur le CRS raster
-  df$hfi_point <- terra::extract(raster, pts_r, ID = FALSE)[, 1]
+  # Create terra points directly from sf geometry
+  pts <- terra::vect(df_sf)
   
-  # Buffer at 500m and 1000m, mean of the values
+  # Project points to raster CRS if needed
+  pts_r <- terra::project(pts, terra::crs(raster))
+  
+  # Extract HFI value at GPS point
+  df$hfi_point <- terra::extract(
+    raster,
+    pts_r,
+    ID = FALSE
+  )[[1]]
+  
+  # Extract mean HFI in buffers
   for (r in buffers_m) {
-    buf   <- terra::buffer(pts, width = r)             
-    buf_r <- terra::project(buf, hfi_crs)
-    val   <- terra::extract(raster, buf_r,
-                            fun = mean, na.rm = TRUE, ID = FALSE)[, 1]
+    
+    # Create buffers in the metric CRS of the GPS data, EPSG:3035
+    buf <- terra::buffer(pts, width = r)
+    
+    # Project buffers to raster CRS
+    buf_r <- terra::project(buf, terra::crs(raster))
+    
+    # Extract mean HFI inside buffer
+    val <- terra::extract(
+      raster,
+      buf_r,
+      fun = mean,
+      na.rm = TRUE,
+      ID = FALSE
+    )[[1]]
+    
     df[[paste0("hfi_mean_", r, "m")]] <- val
   }
   
-  df
-}
+  df}
 
 regular_20_hfi <- extract_hfi(regular_20_sf)
 regular_60_hfi <- extract_hfi(regular_60_sf)
 
-# save and export
-saveRDS(regular_20_hfi, file.path(output_dir, "GE_20_min_thinned_hfi.rds"))
-saveRDS(regular_60_hfi, file.path(output_dir, "GE_60_min_thinned_hfi.rds"))
+# Controls
+regular_20_hfi[
+  ,
+  c("hfi_point", "hfi_mean_500m", "hfi_mean_1000m")
+] |>
+  summary()
+
+regular_60_hfi[
+  ,
+  c("hfi_point", "hfi_mean_500m", "hfi_mean_1000m")
+] |>
+  summary()
+
+# Save outputs
+saveRDS(
+  regular_20_hfi,
+  file.path(output_dir, "GE_20_min_thinned_behavior_assigned_hfi.rds"),
+  compress = "gzip")
+
+saveRDS(
+  regular_60_hfi,
+  file.path(output_dir, "GE_60_min_thinned_behavior_assigned_hfi.rds"),
+  compress = "gzip")
