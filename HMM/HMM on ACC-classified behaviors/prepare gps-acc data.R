@@ -18,7 +18,8 @@ library(terra)           # for raster
 library(data.table)      # to read the acc-classified data
 library(move)
 library(dplyr)
-
+library(sf)
+library(move2)
 
 #' Step 0 : load the data ----
 output_dir <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnes filtree intermediaire"
@@ -470,8 +471,7 @@ gps_behavior_assignment_summary <- gps_beh_15w[
     n_gps = .N,
     n_gps_with_behavior = sum(behavior_assigned),
     prop_gps_with_behavior = mean(behavior_assigned),
-    median_abs_time_diff_min = median(abs_time_diff_min, na.rm = TRUE),
-    q95_abs_time_diff_min = safe_q95(abs_time_diff_min)
+    median_abs_time_diff_min = median(abs_time_diff_min, na.rm = TRUE)
   ),
   by = individual.local.identifier
 ][order(individual.local.identifier)]
@@ -563,18 +563,18 @@ quantile(
 
 #' We found 
 #' Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
-#' 0.133    14.9    19.75     44.0    20.05 248398.40
+#' 0.133    14.9    19.76     43.9    20.05 24839.40
 #' We choose a fine scale resolution of 20 minutes because it is close to the 
 #' upper quartile of the main fine-scale sampling distribution and 60 minutes 
 #' because 95% quantiles are around 60 minutes.
 
 
-# 3.2 Select observed gps points at 20-min and 60-min interavals using move2
+#' Step 3.2 Thin GPS data at 20-min and 60-min intervals ----
 high_res_min <- 20
 intermediate_res_min <- 60
 
-high_res_tolerance_min <- 5 # tolerance of 5min for the 20min interval
-intermediate_tolerance_min <- 10 # tolerance of 10min for the 20min interval
+high_res_tolerance_min <- 5
+intermediate_tolerance_min <- 10
 
 min_points_per_burst <- 3
 
@@ -582,7 +582,8 @@ format_interval_name <- function(interval_min) {
   gsub("\\.", "p", paste0(interval_min, "min"))
 }
 
-# Thin gps data
+
+#' Thin GPS data
 thin_move2_interval <- function(locs,
                                 interval_unit,
                                 resolution_min,
@@ -608,29 +609,27 @@ thin_move2_interval <- function(locs,
       resolution_class = resolution_label
     ) %>%
     sf::st_drop_geometry() %>%
+    as.data.frame() %>%
     dplyr::arrange(individual.id, timestamp)
   
   locs_thin_tbl
 }
 
-# 3.3 Split retained tracks into bursts ----
+
+#' Step 3.3 Split retained tracks into regular bursts ----
 split_into_regular_bursts <- function(df,
                                       interval_min,
                                       tolerance_min,
                                       min_points_per_burst = 3) {
   
   df_burst <- df %>%
-    arrange(individual.id, timestamp) %>%
-    group_by(individual.id) %>%
-    mutate(
-      
-      # Time lag between retained observed GPS fixes
+    dplyr::arrange(individual.id, timestamp) %>%
+    dplyr::group_by(individual.id) %>%
+    dplyr::mutate(
       dt_prev_min = as.numeric(
-        difftime(timestamp, lag(timestamp), units = "mins")
+        difftime(timestamp, dplyr::lag(timestamp), units = "mins")
       ),
       
-      # A new burst starts when: a) its is the first point of the ind, b)
-      # the previous retained point is not close enough to the target interval.
       new_burst = is.na(dt_prev_min) |
         abs(dt_prev_min - interval_min) > tolerance_min,
       
@@ -643,30 +642,28 @@ split_into_regular_bursts <- function(df,
         sep = "_"
       )
     ) %>%
-    ungroup()
+    dplyr::ungroup()
   
-  # Remove very short bursts
   df_burst <- df_burst %>%
-    group_by(individual.id, burst_id) %>%
-    mutate(
-      n_points_burst = n()
+    dplyr::group_by(individual.id, burst_id) %>%
+    dplyr::mutate(
+      n_points_burst = dplyr::n()
     ) %>%
-    ungroup() %>%
-    filter(n_points_burst >= min_points_per_burst)
+    dplyr::ungroup() %>%
+    dplyr::filter(n_points_burst >= min_points_per_burst)
   
-  # Recompute next-step timing after removing short bursts
   df_burst <- df_burst %>%
-    arrange(individual.id, burst_id, timestamp) %>%
-    group_by(individual.id, burst_id) %>%
-    mutate(
-      row_in_burst = row_number(),
+    dplyr::arrange(individual.id, burst_id, timestamp) %>%
+    dplyr::group_by(individual.id, burst_id) %>%
+    dplyr::mutate(
+      row_in_burst = dplyr::row_number(),
       
       dt_prev_burst_min = as.numeric(
-        difftime(timestamp, lag(timestamp), units = "mins")
+        difftime(timestamp, dplyr::lag(timestamp), units = "mins")
       ),
       
       dt_next_burst_min = as.numeric(
-        difftime(lead(timestamp), timestamp, units = "mins")
+        difftime(dplyr::lead(timestamp), timestamp, units = "mins")
       ),
       
       has_next_regular = !is.na(dt_next_burst_min) &
@@ -674,43 +671,13 @@ split_into_regular_bursts <- function(df,
       
       lag_deviation_next_min = dt_next_burst_min - interval_min
     ) %>%
-    ungroup()
+    dplyr::ungroup()
   
   df_burst
 }
 
-# 3.4 create 20-min and 60-min datasets ----
-thin_move2_interval <- function(locs,
-                                interval_unit,
-                                resolution_min,
-                                resolution_label) {
-  
-  locs_thin <- locs %>%
-    dplyr::arrange(individual.id, timestamp) %>%
-    move2::mt_filter_per_interval(
-      unit = interval_unit,
-      criterion = "first"
-    )
-  
-  xy <- sf::st_coordinates(locs_thin)
-  
-  locs_thin_tbl <- locs_thin %>%
-    dplyr::mutate(
-      individual.local.identifier = as.character(individual.id),
-      timestamp = as.POSIXct(timestamp, tz = "UTC"),
-      x_3035 = xy[, 1],
-      y_3035 = xy[, 2],
-      resolution_min = resolution_min,
-      resolution_class = resolution_label
-    ) %>%
-    sf::st_drop_geometry() %>%
-    dplyr::arrange(individual.local.identifier, timestamp)
-  
-  locs_thin_tbl
-}
 
-
-
+#' Step 3.4 Create 20-min and 60-min datasets ----
 thin_20_tbl <- thin_move2_interval(
   locs = locs_3035,
   interval_unit = "20 minutes",
@@ -739,49 +706,48 @@ regular_60_tbl <- split_into_regular_bursts(
   min_points_per_burst = min_points_per_burst
 )
 
-# 3.5 Control the dataset filtered ----
+
+
+#' Step 3.5 Control the filtered datasets ----
 check_timing <- function(df) {
   
   df %>%
-    filter(has_next_regular == TRUE) %>%
-    summarise(
-      resolution_min = first(resolution_min),
-      n_individuals = n_distinct(individual.local.identifier),
-      n_points = n(),
-      n_bursts = n_distinct(burst_id),
+    dplyr::filter(has_next_regular == TRUE) %>%
+    dplyr::summarise(
+      resolution_min = dplyr::first(resolution_min),
+      n_individuals = dplyr::n_distinct(individual.local.identifier),
+      n_points = dplyr::n(),
+      n_bursts = dplyr::n_distinct(burst_id),
       n_valid_transitions = sum(has_next_regular, na.rm = TRUE),
       median_dt_next_min = median(dt_next_burst_min, na.rm = TRUE),
-      p05_dt_next_min = quantile(dt_next_burst_min, 0.05, na.rm = TRUE),
-      p95_dt_next_min = quantile(dt_next_burst_min, 0.95, na.rm = TRUE),
+      p05_dt_next_min = stats::quantile(dt_next_burst_min, 0.05, na.rm = TRUE),
+      p95_dt_next_min = stats::quantile(dt_next_burst_min, 0.95, na.rm = TRUE),
       min_dt_next_min = min(dt_next_burst_min, na.rm = TRUE),
       max_dt_next_min = max(dt_next_burst_min, na.rm = TRUE),
       median_abs_deviation_min = median(abs(lag_deviation_next_min), na.rm = TRUE),
-      p95_abs_deviation_min = quantile(abs(lag_deviation_next_min), 0.95, na.rm = TRUE)
+      p95_abs_deviation_min = stats::quantile(abs(lag_deviation_next_min), 0.95, na.rm = TRUE)
     )
 }
 
 timing_20 <- check_timing(regular_20_tbl)
 timing_60 <- check_timing(regular_60_tbl)
 
-timing_summary <- bind_rows(
-  timing_20 %>% mutate(dataset = "20min_high_resolution"),
-  timing_60 %>% mutate(dataset = "60min_intermediate_resolution")
+timing_summary <- dplyr::bind_rows(
+  timing_20 %>% dplyr::mutate(dataset = "20min_high_resolution"),
+  timing_60 %>% dplyr::mutate(dataset = "60min_intermediate_resolution")
 )
 
 print(timing_summary)
-#' we obtain 
-#' resolution_min n_individuals n_points n_bursts n_valid_transitions 
-#'           20            59    93134    9997              93134                
-#'           60            64    54140    6519              54140             
 
-# inspect individual differences
+
+#' Step 3.5b Inspect individual differences ----
 summarise_by_individual <- function(df) {
   
   df %>%
-    group_by(resolution_class, individual.local.identifier) %>%
-    summarise(
-      n_points_retained = n(),
-      n_bursts = n_distinct(burst_id),
+    dplyr::group_by(resolution_class, individual.local.identifier) %>%
+    dplyr::summarise(
+      n_points_retained = dplyr::n(),
+      n_bursts = dplyr::n_distinct(burst_id),
       n_valid_transitions = sum(has_next_regular, na.rm = TRUE),
       median_points_per_burst = median(n_points_burst, na.rm = TRUE),
       max_points_per_burst = max(n_points_burst, na.rm = TRUE),
@@ -789,7 +755,7 @@ summarise_by_individual <- function(df) {
     )
 }
 
-summary_by_id <- bind_rows(
+summary_by_id <- dplyr::bind_rows(
   summarise_by_individual(regular_20_tbl),
   summarise_by_individual(regular_60_tbl)
 )
@@ -797,12 +763,37 @@ summary_by_id <- bind_rows(
 print(summary_by_id, n = 128)
 
 low_data_individuals <- summary_by_id %>%
-  filter(n_valid_transitions < 200) %>%
-  arrange(resolution_class, n_valid_transitions)
+  dplyr::filter(n_valid_transitions < 200) %>%
+  dplyr::arrange(resolution_class, n_valid_transitions)
 
 print(low_data_individuals)
 
-# 3.6 Export datasets ----
+
+#' Step 3.6 Export datasets ----
+regular_20_tbl <- regular_20_tbl %>%
+  dplyr::mutate(
+    x_3035 = as.numeric(x_3035),
+    y_3035 = as.numeric(y_3035)
+  ) %>%
+  dplyr::filter(
+    !is.na(x_3035),
+    !is.na(y_3035),
+    is.finite(x_3035),
+    is.finite(y_3035)
+  )
+
+regular_60_tbl <- regular_60_tbl %>%
+  dplyr::mutate(
+    x_3035 = as.numeric(x_3035),
+    y_3035 = as.numeric(y_3035)
+  ) %>%
+  dplyr::filter(
+    !is.na(x_3035),
+    !is.na(y_3035),
+    is.finite(x_3035),
+    is.finite(y_3035)
+  )
+
 regular_20_tbl %>%
   dplyr::summarise(
     n_rows = dplyr::n(),
@@ -821,24 +812,100 @@ regular_60_tbl %>%
     n_non_finite_y = sum(!is.finite(y_3035))
   )
 
-regular_20_sf <- sf::st_as_sf(
-  regular_20_tbl,
-  coords = c("x_3035", "y_3035"),
-  crs = 3035,
-  remove = FALSE
-)
 
-regular_60_sf <- sf::st_as_sf(
-  regular_60_tbl,
-  coords = c("x_3035", "y_3035"),
-  crs = 3035,
-  remove = FALSE
-)
+make_sf_from_xy <- function(df, crs_value = 3035) {
+  
+  df <- as.data.frame(df)
+  
+  x <- as.numeric(df$x_3035)
+  y <- as.numeric(df$y_3035)
+  
+  keep <- !is.na(x) & !is.na(y) & is.finite(x) & is.finite(y)
+  
+  df <- df[keep, , drop = FALSE]
+  x <- x[keep]
+  y <- y[keep]
+  
+  geometry <- sf::st_sfc(
+    lapply(
+      seq_along(x),
+      function(i) sf::st_point(c(x[i], y[i]))
+    ),
+    crs = crs_value
+  )
+  
+  sf::st_sf(
+    df,
+    geometry = geometry
+  )
+}
 
-saveRDS(
-  regular_20_sf,
-  file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds"))
+regular_20_sf <- make_sf_from_xy(regular_20_tbl, crs_value = 3035)
+regular_60_sf <- make_sf_from_xy(regular_60_tbl, crs_value = 3035)
 
-saveRDS(
-  regular_60_sf,
-  file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds"))
+sf::st_crs(regular_20_sf)
+sf::st_crs(regular_60_sf)
+
+sum(sf::st_is_empty(regular_20_sf))
+sum(sf::st_is_empty(regular_60_sf))
+
+
+#' Step 3.7 Save outputs ----
+saveRDS(regular_20_sf,
+  file.path(output_dir, "GE_20_min_thinned_behavior_assigned.rds"),
+  compress = "gzip")
+
+saveRDS(regular_60_sf,
+  file.path(output_dir, "GE_60_min_thinned_behavior_assigned.rds"),
+  compress = "gzip")
+
+
+
+#'------------------------------------------------------------------------------
+#' Step 4 : extract human footprint index around GPS locations
+#'
+#' (1) extract covariates values at three buffer size : 
+#' - hfi_mean_100m  = HFI value of the pixel containing the GPS point
+#' - hfi_mean_500m  = mean HFI of pixels within 500 m of that pixel
+#' - hfi_mean_1000m = mean HFI of pixels within 1000 m of that pixel
+#' (2) export the RDS file
+
+
+# Terra parameters
+terra::terraOptions(threads = 5)
+
+# Function for covariate extraction
+hfi_crs <- terra::crs(human_footprint)
+
+extract_hfi <- function(df_sf,
+                        raster    = human_footprint,
+                        buffers_m = c(500, 1000)) {
+  
+  # Remove geometry, create a matrix for coordinates
+  df  <- as.data.frame(sf::st_drop_geometry(df_sf))
+  pts <- terra::vect(as.matrix(df[, c("x_3035", "y_3035")]),
+                     type = "points",
+                     crs  = "EPSG:3035")
+  
+  # Extraction of the HFI value below GPS points
+  pts_r        <- terra::project(pts, hfi_crs)         # alignement sur le CRS raster
+  df$hfi_point <- terra::extract(raster, pts_r, ID = FALSE)[, 1]
+  
+  # Buffer at 500m and 1000m, mean of the values
+  for (r in buffers_m) {
+    buf   <- terra::buffer(pts, width = r)             
+    buf_r <- terra::project(buf, hfi_crs)
+    val   <- terra::extract(raster, buf_r,
+                            fun = mean, na.rm = TRUE, ID = FALSE)[, 1]
+    df[[paste0("hfi_mean_", r, "m")]] <- val
+  }
+  
+  df
+}
+
+regular_20_hfi <- extract_hfi(regular_20_sf)
+regular_60_hfi <- extract_hfi(regular_60_sf)
+
+# save and export
+saveRDS(regular_20_hfi, file.path(output_dir, "GE_20_min_thinned_hfi.rds"))
+saveRDS(regular_60_hfi, file.path(output_dir, "GE_60_min_thinned_hfi.rds"))
