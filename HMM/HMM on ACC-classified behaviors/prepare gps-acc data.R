@@ -4,7 +4,8 @@
 #' Date : 02.07.26
 #' Purpose : 
 #' (1) filter location to the first fifteen weeks of dispersal, 
-#' (2) associate behaviors to one location
+#' (2) associate acc-burst (with behaviors) to one location
+#' (3) reclassify behaviors before thining
 #' (3) thin the data at two temporal resolution (20min and 60min) and split into
 #' burst,
 #' (4) extract environmental covariates at the two temporal scale and within 
@@ -50,9 +51,9 @@ new_classified_dir <- "C:/Users/lfaure7/Desktop/aigle non classifié/rf_assigned
 
 
 # 1.1 load and merge the two behavioral classification ----
-acc_old <- data.table::fread(
-  classified_path,
-  showProgress = TRUE)
+# acc_old <- data.table::fread(
+#   classified_path,
+#   showProgress = TRUE)
 
 acc_old[, source_dataset := "previous_classification"]
 acc_old[, source_file := basename(classified_path)]
@@ -437,19 +438,32 @@ gps_behavior_assignment_summary <- gps_beh_15w[
 
 gps_behavior_assignment_summary
 
+# evaluate the number of location that does not have any behavior assigned
 
-#' Step 2.9: save outputs ----
-saveRDS(
-  gps_beh_15w,
-  file.path(output_dir, "gps_with_nearest_acc_behavior_within_60min.rds"),
-  compress = "gzip"
-)
+
+#' -----------------------------------------------------------------------------
+#' Step 3 : reclassify behaviors
+#' 
+#' **Philosophy**: we are interested in the places where eagle land. We group 
+#' certain behavioural categories together in order to ensure significant 
+#' behavioral classes to run statistical tests later. 
+#' 
+#' **Steps**:
+#' (1) create a new column called behaviors reclassified 
+#' (2) reclassify the behaviors : 
+#'       - flight correspond to the category 'undulating' and 'active'
+#'       - resting correspond to the category 'bodycare', 'standing' and 'passive'
+#'       - feeding correspond to 'feeding'
+#'       - walking is transformed to feeding or resting as a function of the
+#'       proximate behaviors identified in a short time window. 
+
+
 
 
 
 
 #' -----------------------------------------------------------------------------
-#' Step 3 : creation of two temporally regular dataset
+#' Step 4 : creation of two temporally regular dataset
 #' 
 #' **Steps:**
 #' (1) inspect raw GPS sampling intervals;
@@ -458,7 +472,7 @@ saveRDS(
 #' (4) split tracks into bursts
 
 
-# 3.1 Inspect raw GPS data ----
+# 4.1 Inspect raw GPS data ----
 # Create move2 object from dispersal_data
 step3_input <- gps_beh_15w[behavior_assigned == TRUE]
 
@@ -528,7 +542,7 @@ quantile(
 #' because 95% quantiles are around 60 minutes.
 
 
-#' Step 3.2 Thin GPS data at 20-min and 60-min intervals ----
+#' Step 4.2 Thin GPS data at 20-min and 60-min intervals ----
 high_res_min <- 20
 intermediate_res_min <- 60
 
@@ -574,7 +588,7 @@ thin_move2_interval <- function(locs,
 }
 
 
-#' Step 3.3 Split retained tracks into regular bursts ----
+#' Step 4.3 Split retained tracks into regular bursts ----
 split_into_regular_bursts <- function(df,
                                       interval_min,
                                       tolerance_min,
@@ -635,7 +649,7 @@ split_into_regular_bursts <- function(df,
 }
 
 
-#' Step 3.4 Create 20-min and 60-min datasets ----
+#' Step 4.4 Create 20-min and 60-min datasets ----
 thin_20_tbl <- thin_move2_interval(
   locs = locs_3035,
   interval_unit = "20 minutes",
@@ -662,7 +676,7 @@ regular_60_tbl <- split_into_regular_bursts(
 
 
 
-#' Step 3.5a Control the filtered datasets ----
+#' Step 4.5a Control the filtered datasets ----
 check_timing <- function(df) {
   
   df %>%
@@ -694,7 +708,7 @@ timing_summary <- dplyr::bind_rows(
 print(timing_summary)
 
 
-#' Step 3.5b Inspect individual differences ----
+#' Step 4.5b Inspect individual differences ----
 summarise_by_individual <- function(df) {
   
   df %>%
@@ -803,7 +817,7 @@ sum(sf::st_is_empty(regular_20_sf))
 sum(sf::st_is_empty(regular_60_sf))
 
 
-#' Step 3.7 Save outputs ----
+#' Step 4.7 Save outputs ----
 saveRDS(regular_20_sf,
   file.path(output_dir, "GE_20_min_thinned_behavior_assigned.rds"),
   compress = "gzip")
@@ -816,7 +830,7 @@ saveRDS(regular_60_sf,
 
 
 #'------------------------------------------------------------------------------
-#' Step 4 : extract human footprint index around GPS locations
+#' Step 5 : extract human footprint index around GPS locations
 #' 
 #' **Steps:**
 #' (1) extract covariates values at three buffer size : 
