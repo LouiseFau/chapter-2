@@ -479,7 +479,6 @@ make_multinom_formula <- function(hfi_var = NULL) {
 # 2.4 Null model: no HFI ----
 # This model includes departure state, age, distance to nest, time of day,
 # and individual identity, but no human footprint index.
-
 m_null_20 <- mgcv::gam(
   formula = make_multinom_formula(hfi_var = NULL),
   family = mgcv::multinom(K = 4),
