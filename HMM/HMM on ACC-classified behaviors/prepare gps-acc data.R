@@ -681,10 +681,10 @@ k_context <- 2
 #' Step 3.1: direct reclassification of non-walking behaviors ----
 gps_beh_15w[,
   behavior_base := data.table::fcase(
-    rf8fitted %in% c("Active", "Undulating"),
+    rf8fitted %in% c("Active", "Undulating", "Passive"),
     "flight",
     
-    rf8fitted %in% c("Bodycare", "Standing", "Passive"),
+    rf8fitted %in% c("Bodycare", "Standing"),
     "resting",
     
     rf8fitted == "Feeding",
