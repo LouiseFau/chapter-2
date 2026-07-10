@@ -25,17 +25,13 @@ library(move2)
 
 
 #' Step 0 : load the data ----
-output_dir <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnes filtree intermediaire"
+output_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)"
 
-# Géoïde, digital elevation model, human footprint index
-geo <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/geoide/us_nga_egm96_15.tif")
-dem <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
-human_footprint <- terra::rast("C:/Users/lfaure7/OneDrive/THESE/COUCHES QGIS/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
-
-# emigration dates and golden eagle data
-emig_dates <- readRDS("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/donnees/emigration dates/emigration_dates_20250417.rds")
-classified_path <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/donnees/acc-data/Louise_PhD/classified_acc_data/2024_01_24_alldata_allbirds_merged_rf_raw.csv"
-new_classified_dir <- "C:/Users/lfaure7/Desktop/aigle non classifié/rf_assigned"
+# emigration dates, golden eagle data, human footprint index
+human_footprint <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
+emig_dates <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
+classified_path <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/classified_acc_data/2024_01_24_alldata_allbirds_merged_rf_raw.csv"
+new_classified_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/Individus non classifies/rf_assigned"
 
 
 
@@ -51,9 +47,9 @@ new_classified_dir <- "C:/Users/lfaure7/Desktop/aigle non classifié/rf_assigned
 
 
 # 1.1 load and merge the two behavioral classification ----
-# acc_old <- data.table::fread(
-#   classified_path,
-#   showProgress = TRUE)
+acc_old <- data.table::fread(
+classified_path,
+showProgress = TRUE)
 
 acc_old[, source_dataset := "previous_classification"]
 acc_old[, source_file := basename(classified_path)]
@@ -133,9 +129,11 @@ acc_15w[, timespan := data.table::as.IDate(timestamp)]
 
 saveRDS(
   acc_15w,
-  file.path(output_dir, "acc_classified_first_15_weeks_all_individuals_merged_old_new.rds"),
+  file.path(output_dir, "acc_classified_first_15_weeks_all_individuals_merged.rds"),
   compress = "gzip"
-)
+) 
+#' Droslöng17 (eobs 5704) and Viluoch17 (eobs 4570) does not have ACC data for
+#' the first fifteen weeks of the dispersal period. N. of individuals : 64
 
 
 
@@ -158,7 +156,7 @@ saveRDS(
 
 
 #' Step 2.0: load GPS files without burst segmentation ----
-gps_dir <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/git/chapter-2/preparation donnee aigle ssf/donnees/no_burst_GE/no_burst_GE"
+gps_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/no_burst_GE/no_burst_GE"
 
 gps_files <- list.files(
   path = gps_dir,
@@ -424,29 +422,203 @@ data.table::setorder(
   gps_timestamp)
 
 
-#' Step 2.8: final GPS-level diagnostics ----
-gps_behavior_assignment_summary <- gps_beh_15w[
+#' Step 2.8: individual leval diagnostics ----
+gps_behavior_assignment_summary <- gps_beh_15w[,.(
+    n_gps = .N,
+    n_gps_with_behavior = sum(behavior_assigned, na.rm = TRUE),
+    n_gps_without_behavior = sum(!behavior_assigned, na.rm = TRUE),
+    n_rf8fitted_NA = sum(is.na(rf8fitted)),
+    prop_gps_with_behavior = mean(behavior_assigned, na.rm = TRUE)
+  ),
+  by = individual.local.identifier
+][
+  order(individual.local.identifier)
+]
+
+gps_behavior_assignment_summary 
+# at the end of this stage where each ACC burst received a closed location points,
+# numerous individuals have still NA, e.i., location points without behavior 
+# assigned. 
+
+
+#' Step 2.9: second assignment of behaviors to GPS points ----
+#' We use ACC-burst data that has not been retained for any other location, and 
+#' are separated at least from 60 minutes from a non classified gps location point.
+max_secondary_assignment_gap_min <- 60
+
+data.table::setDT(gps_beh_15w)
+data.table::setDT(acc_points)
+data.table::setDT(gps_behavior_from_acc)
+
+gps_beh_15w[
   ,
+  behavior_assignment_method := data.table::fifelse(
+    behavior_assigned == TRUE,
+    "primary_ACC_to_nearest_GPS",
+    "unassigned_after_primary")]
+
+
+#' Step 2.9.1: identify ACC bursts already retained in primary assignment ----
+primary_used_acc <- unique(
+  gps_behavior_from_acc[
+    !is.na(acc_event_id),
+    .(acc_event_id,
+      acc_burstID,
+      acc_timestamp)])
+
+acc_candidates_secondary <- acc_points[,.(
+    individual.local.identifier,
+    secondary_acc_event_id = acc_event_id,
+    secondary_acc_burstID = acc_burstID,
+    secondary_acc_timestamp = acc_timestamp,
+    secondary_rf8fitted = rf8fitted,
+    secondary_pro_rf8fitted = pro_rf8fitted,
+    secondary_odbaAvg = odbaAvg,
+    secondary_rollanimaltrack = rollanimaltrack,
+    secondary_pitchanimaltrack = pitchanimaltrack,
+    secondary_burstmeanx = burstmeanx,
+    secondary_burstmeany = burstmeany,
+    secondary_burstmeanz = burstmeanz)]
+
+acc_candidates_secondary[,join_time := secondary_acc_timestamp]
+
+primary_used_acc_for_join <- primary_used_acc[,.(
+    secondary_acc_event_id = acc_event_id,
+    secondary_acc_burstID = acc_burstID,
+    secondary_acc_timestamp = acc_timestamp)]
+
+acc_candidates_secondary[
+  primary_used_acc_for_join,
+  already_used_primary := TRUE,
+  on = c(
+    "secondary_acc_event_id",
+    "secondary_acc_burstID",
+    "secondary_acc_timestamp")]
+
+acc_candidates_secondary[
+  is.na(already_used_primary),
+  already_used_primary := FALSE]
+
+# Keep only ACC bursts not already retained in the primary GPS-level dataset
+acc_candidates_secondary_unused <- acc_candidates_secondary[
+  already_used_primary == FALSE]
+
+
+#' Step 2.9.2: prepare GPS points still missing behavior ----
+gps_missing_behavior <- gps_beh_15w[
+  behavior_assigned == FALSE,
   .(
+    individual.local.identifier,
+    gps_row_id,
+    gps_timestamp)]
+
+gps_missing_behavior[,
+  join_time := gps_timestamp]
+
+
+#' Step 2.9.3: for each missing GPS point, find nearest unused ACC burst ----
+data.table::setkey(
+  acc_candidates_secondary_unused,
+  individual.local.identifier,
+  join_time)
+
+data.table::setkey(
+  gps_missing_behavior,
+  individual.local.identifier,
+  join_time)
+
+secondary_nearest_acc <- acc_candidates_secondary_unused[
+  gps_missing_behavior,
+  on = .(individual.local.identifier, join_time),
+  roll = "nearest"]
+
+secondary_nearest_acc[,
+  secondary_abs_time_diff_min := abs(
+    as.numeric(
+      difftime(
+        secondary_acc_timestamp,
+        gps_timestamp,
+        units = "mins")))]
+
+
+#' Step 2.9.4: keep only secondary assignments within 60 min ----
+secondary_assignments_60min <- secondary_nearest_acc[
+  !is.na(secondary_acc_timestamp) &
+    secondary_abs_time_diff_min <= max_secondary_assignment_gap_min]
+
+# One unused ACC burst should not be assigned to several GPS points.
+# If the same ACC burst is closest to several missing GPS points, retain the
+# closest GPS point only.
+secondary_assignments_60min[,
+  secondary_pro_rf8fitted_order := data.table::fifelse(
+    is.na(secondary_pro_rf8fitted),
+    -Inf,
+    secondary_pro_rf8fitted)]
+
+data.table::setorder(
+  secondary_assignments_60min,
+  secondary_acc_event_id,
+  secondary_abs_time_diff_min,
+  -secondary_pro_rf8fitted_order)
+
+secondary_assignments_60min <- secondary_assignments_60min[,
+  .SD[1],
+  by = secondary_acc_event_id]
+
+
+#' Step 2.9.5: merge secondary assignments back to GPS-level dataset ----
+gps_beh_15w[
+  secondary_assignments_60min,
+  on = "gps_row_id",
+  `:=`(
+    rf8fitted = i.secondary_rf8fitted,
+    pro_rf8fitted = i.secondary_pro_rf8fitted,
+    acc_event_id = i.secondary_acc_event_id,
+    acc_burstID = i.secondary_acc_burstID,
+    acc_timestamp = i.secondary_acc_timestamp,
+    abs_time_diff_min = i.secondary_abs_time_diff_min,
+    odbaAvg = i.secondary_odbaAvg,
+    rollanimaltrack = i.secondary_rollanimaltrack,
+    pitchanimaltrack = i.secondary_pitchanimaltrack,
+    burstmeanx = i.secondary_burstmeanx,
+    burstmeany = i.secondary_burstmeany,
+    burstmeanz = i.secondary_burstmeanz,
+    behavior_assigned = TRUE,
+    behavior_assignment_method = "secondary_GPS_to_nearest_unused_ACC_within_60min")]
+
+
+#' Step 2.9.6: diagnostics after secondary assignment ----
+behavior_assignment_method_summary <- gps_beh_15w[,
+  .N,
+  by = behavior_assignment_method][
+  order(-N)]
+
+print(behavior_assignment_method_summary)
+
+gps_behavior_assignment_summary_after_secondary <- gps_beh_15w[,.(
     n_gps = .N,
     n_gps_with_behavior = sum(behavior_assigned),
+    n_gps_without_behavior = sum(!behavior_assigned),
     prop_gps_with_behavior = mean(behavior_assigned),
+    prop_gps_without_behavior = mean(!behavior_assigned),
     median_abs_time_diff_min = median(abs_time_diff_min, na.rm = TRUE)
   ),
   by = individual.local.identifier
-][order(individual.local.identifier)]
+][
+  order(-prop_gps_without_behavior)]
 
-gps_behavior_assignment_summary
-
-# evaluate the number of location that does not have any behavior assigned
+print(gps_behavior_assignment_summary_after_secondary)
+#' The NAs that remain are mostly associated to few individuals, e.i., Mals2_20
+#' and Krn20 that have less than 10% of their GPS location associated with a 
+#' behavior. 
 
 
 #' -----------------------------------------------------------------------------
 #' Step 3 : reclassify behaviors
 #' 
-#' **Philosophy**: we are interested in the places where eagle land. We group 
-#' certain behavioural categories together in order to ensure significant 
-#' behavioral classes to run statistical tests later. 
+#' **Philosophy**: we group certain behavioural categories together in order 
+#' to ensure significantly large classes of behaviors to calculate transition 
+#' probability later. We focus on three groups : feeding, resting, flight. 
 #' 
 #' **Steps**:
 #' (1) create a new column called behaviors reclassified 
@@ -454,10 +626,393 @@ gps_behavior_assignment_summary
 #'       - flight correspond to the category 'undulating' and 'active'
 #'       - resting correspond to the category 'bodycare', 'standing' and 'passive'
 #'       - feeding correspond to 'feeding'
-#'       - walking is transformed to feeding or resting as a function of the
-#'       proximate behaviors identified in a short time window. 
+#' (3) for 'walking' : (a) identify consecutive walking events within individual
+#' temporal sequences; (b) find the nearest non-walking terrestrial states before
+#' and after the block;(c) if these behavior are the same, assign the whole 
+#' walking block to that state and if not, use the majority among the 2 nearest
+#' terrestrial events before and the 2 nearest terrestrial events after; (d) if
+#' equality, use the temporally closest terrestrial event; (e) if unresolved, 
+#' keep NA and exclude from the Markov model later.
 
 
+data.table::setDT(gps_beh_15w)
+
+required_cols <- c(
+  "individual.local.identifier",
+  "gps_timestamp",
+  "rf8fitted"
+)
+
+missing_cols <- setdiff(required_cols, names(gps_beh_15w))
+
+if (length(missing_cols) > 0) {
+  stop(
+    "Missing required columns in gps_beh_15w: ",
+    paste(missing_cols, collapse = ", ")
+  )
+}
+
+gps_beh_15w[, individual.local.identifier := as.character(individual.local.identifier)]
+gps_beh_15w[, gps_timestamp := as.POSIXct(gps_timestamp, tz = "UTC")]
+gps_beh_15w[, rf8fitted := as.character(rf8fitted)]
+
+data.table::setorder(
+  gps_beh_15w,
+  individual.local.identifier,
+  gps_timestamp
+)
+
+# Unique row identifier after ordering
+gps_beh_15w[, row_index := .I]
+
+# Maximum gap allowed when using neighboring behavior to reclassify walking.
+# This prevents classifying a walking event using a distant context.
+if (!exists("max_assignment_gap_min")) {
+  max_assignment_gap_min <- 60
+}
+
+max_context_gap_min <- 2 * max_assignment_gap_min
+
+# Number of terrestrial non-walking events used on each side of a walking block
+# when immediate flanks disagree.
+k_context <- 2
+
+
+#' Step 3.1: direct reclassification of non-walking behaviors ----
+gps_beh_15w[,
+  behavior_base := data.table::fcase(
+    rf8fitted %in% c("Active", "Undulating"),
+    "flight",
+    
+    rf8fitted %in% c("Bodycare", "Standing", "Passive"),
+    "resting",
+    
+    rf8fitted == "Feeding",
+    "feeding",
+    
+    rf8fitted == "Walking",
+    "walking",
+    
+    default = NA_character_
+  )
+]
+
+gps_beh_15w[
+  ,
+  behavior_reclassified := behavior_base
+]
+
+gps_beh_15w[
+  ,
+  behavior_reclassification_rule := data.table::fcase(
+    behavior_base %in% c("flight", "resting", "feeding"),
+    "direct_reclassification",
+    
+    behavior_base == "walking",
+    "walking_to_be_reclassified",
+    
+    is.na(behavior_base),
+    "no_behavior_assigned",
+    
+    default = NA_character_
+  )
+]
+
+# Walking is not a final Markov state in this three-state version.
+# It will be reassigned block by block below.
+gps_beh_15w[
+  behavior_base == "walking",
+  behavior_reclassified := NA_character_
+]
+
+
+#' Step 3.2: define temporal sequences within individuals ----
+# A new temporal sequence starts when there is a large gap between consecutive
+# GPS points. This avoids using an old behavior to classify a later walking event.
+
+gps_beh_15w[
+  ,
+  time_gap_from_previous_min := as.numeric(
+    difftime(
+      gps_timestamp,
+      data.table::shift(gps_timestamp),
+      units = "mins"
+    )
+  ),
+  by = individual.local.identifier
+]
+
+gps_beh_15w[
+  ,
+  new_context_sequence := is.na(time_gap_from_previous_min) |
+    time_gap_from_previous_min > max_context_gap_min,
+  by = individual.local.identifier
+]
+
+gps_beh_15w[
+  ,
+  context_sequence_id := cumsum(new_context_sequence),
+  by = individual.local.identifier
+]
+
+gps_beh_15w[
+  ,
+  row_in_context_sequence := seq_len(.N),
+  by = .(individual.local.identifier, context_sequence_id)
+]
+
+
+#' Step 3.3: identify consecutive walking blocks ----
+gps_beh_15w[
+  ,
+  is_walking := !is.na(behavior_base) & behavior_base == "walking"
+]
+
+gps_beh_15w[
+  ,
+  walking_block_id := data.table::fifelse(
+    is_walking,
+    cumsum(
+      is_walking &
+        !data.table::shift(is_walking, fill = FALSE)
+    ),
+    NA_integer_
+  ),
+  by = .(individual.local.identifier, context_sequence_id)
+]
+
+walking_blocks <- gps_beh_15w[
+  is_walking == TRUE,
+  .(
+    block_start_row = min(row_index),
+    block_end_row = max(row_index),
+    block_start_time = min(gps_timestamp),
+    block_end_time = max(gps_timestamp),
+    first_row_in_context = min(row_in_context_sequence),
+    last_row_in_context = max(row_in_context_sequence),
+    n_walking_in_block = .N
+  ),
+  by = .(
+    individual.local.identifier,
+    context_sequence_id,
+    walking_block_id
+  )
+]
+
+
+#' Step 3.4: reclassify walking blocks from local terrestrial context ----
+
+terrestrial_states <- c("resting", "feeding")
+
+for (b in seq_len(nrow(walking_blocks))) {
+  
+  this_ind <- walking_blocks$individual.local.identifier[b]
+  this_context <- walking_blocks$context_sequence_id[b]
+  this_block <- walking_blocks$walking_block_id[b]
+  
+  this_first_pos <- walking_blocks$first_row_in_context[b]
+  this_last_pos <- walking_blocks$last_row_in_context[b]
+  this_start_time <- walking_blocks$block_start_time[b]
+  this_end_time <- walking_blocks$block_end_time[b]
+  
+  block_rows <- gps_beh_15w[
+    individual.local.identifier == this_ind &
+      context_sequence_id == this_context &
+      walking_block_id == this_block,
+    row_index
+  ]
+  
+  context_dt <- gps_beh_15w[
+    individual.local.identifier == this_ind &
+      context_sequence_id == this_context
+  ]
+  
+  before_candidates <- context_dt[
+    row_in_context_sequence < this_first_pos &
+      behavior_base %in% terrestrial_states
+  ][
+    order(-row_in_context_sequence)
+  ]
+  
+  after_candidates <- context_dt[
+    row_in_context_sequence > this_last_pos &
+      behavior_base %in% terrestrial_states
+  ][
+    order(row_in_context_sequence)
+  ]
+  
+  before_candidates <- before_candidates[
+    seq_len(min(nrow(before_candidates), k_context))
+  ]
+  
+  after_candidates <- after_candidates[
+    seq_len(min(nrow(after_candidates), k_context))
+  ]
+  
+  left_state <- if (nrow(before_candidates) >= 1) {
+    before_candidates$behavior_base[1]
+  } else {
+    NA_character_
+  }
+  
+  right_state <- if (nrow(after_candidates) >= 1) {
+    after_candidates$behavior_base[1]
+  } else {
+    NA_character_
+  }
+  
+  assigned_state <- NA_character_
+  assigned_rule <- "walking_unresolved_no_terrestrial_context"
+  
+  # Rule 1: nearest terrestrial flanks agree
+  if (
+    !is.na(left_state) &&
+    !is.na(right_state) &&
+    left_state == right_state
+  ) {
+    
+    assigned_state <- left_state
+    assigned_rule <- "walking_flanked_by_same_terrestrial_state"
+    
+  } else {
+    
+    local_candidates <- data.table::rbindlist(
+      list(before_candidates, after_candidates),
+      use.names = TRUE,
+      fill = TRUE
+    )
+    
+    if (nrow(local_candidates) > 0) {
+      
+      n_resting <- sum(local_candidates$behavior_base == "resting")
+      n_feeding <- sum(local_candidates$behavior_base == "feeding")
+      
+      # Rule 2: majority among local terrestrial context
+      if (n_resting > n_feeding) {
+        
+        assigned_state <- "resting"
+        assigned_rule <- "walking_reclassified_by_local_majority"
+        
+      } else if (n_feeding > n_resting) {
+        
+        assigned_state <- "feeding"
+        assigned_rule <- "walking_reclassified_by_local_majority"
+        
+      } else {
+        
+        # Rule 3: tie resolved by nearest terrestrial event in time
+        local_candidates[
+          row_in_context_sequence < this_first_pos,
+          distance_to_walking_block_min := as.numeric(
+            difftime(this_start_time, gps_timestamp, units = "mins")
+          )
+        ]
+        
+        local_candidates[
+          row_in_context_sequence > this_last_pos,
+          distance_to_walking_block_min := as.numeric(
+            difftime(gps_timestamp, this_end_time, units = "mins")
+          )
+        ]
+        
+        data.table::setorder(
+          local_candidates,
+          distance_to_walking_block_min
+        )
+        
+        min_distance <- local_candidates$distance_to_walking_block_min[1]
+        
+        closest_candidates <- local_candidates[
+          distance_to_walking_block_min == min_distance
+        ]
+        
+        closest_states <- unique(closest_candidates$behavior_base)
+        
+        if (length(closest_states) == 1) {
+          
+          assigned_state <- closest_states[1]
+          assigned_rule <- "walking_tie_resolved_by_nearest_time"
+          
+        } else {
+          
+          assigned_state <- NA_character_
+          assigned_rule <- "walking_unresolved_equal_context"
+        }
+      }
+    }
+  }
+  
+  gps_beh_15w[
+    row_index %in% block_rows,
+    `:=`(
+      behavior_reclassified = assigned_state,
+      behavior_reclassification_rule = assigned_rule,
+      walking_block_size = length(block_rows)
+    )
+  ]
+}
+
+
+#' Step 3.5: final formatting ----
+
+state_levels_3 <- c(
+  "flight",
+  "resting",
+  "feeding"
+)
+
+gps_beh_15w[
+  ,
+  behavior_reclassified := factor(
+    behavior_reclassified,
+    levels = state_levels_3
+  )
+]
+
+
+#' Step 3.6: diagnostics ----
+
+behavior_counts_raw <- gps_beh_15w[
+  ,
+  .N,
+  by = rf8fitted
+][
+  order(-N)
+]
+
+behavior_counts_base <- gps_beh_15w[
+  ,
+  .N,
+  by = behavior_base
+][
+  order(-N)
+]
+
+behavior_counts_reclassified <- gps_beh_15w[
+  ,
+  .N,
+  by = behavior_reclassified
+][
+  order(-N)
+]
+
+print(behavior_counts_raw)
+print(behavior_counts_base)
+print(behavior_counts_reclassified)
+
+#' Step 3.7: object for later thinning and Markov modelling ----
+# Rows with NA behavior_reclassified are kept in gps_beh_15w for diagnostics,
+# but should be removed before constructing Markov transitions.
+gps_beh_15w_markov_ready <- gps_beh_15w[
+  !is.na(behavior_reclassified)]
+
+saveRDS(
+  gps_beh_15w_markov_ready,
+  file.path(
+    output_dir,
+    "gps_behavior_first_15_weeks_reclassified_markov_ready.rds"
+  ),
+  compress = "gzip")
 
 
 
@@ -474,7 +1029,7 @@ gps_behavior_assignment_summary
 
 # 4.1 Inspect raw GPS data ----
 # Create move2 object from dispersal_data
-step3_input <- gps_beh_15w[behavior_assigned == TRUE]
+step3_input <- gps_beh_15w_markov_ready[behavior_assigned == TRUE]
 
 locs <- step3_input %>%
   mutate(
@@ -527,19 +1082,16 @@ time_lags <- locs_tbl %>%
   ungroup() %>%
   filter(!is.na(dt_min), dt_min > 0)
 
-summary(time_lags$dt_min) 
-
 quantile(
   time_lags$dt_min,
   probs = c(0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99),
   na.rm = TRUE)
 
 #' We found 
-#' Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
-#' 0.133    14.9    19.76     43.9    20.05 24839.40
-#' We choose a fine scale resolution of 20 minutes because it is close to the 
-#' upper quartile of the main fine-scale sampling distribution and 60 minutes 
-#' because 95% quantiles are around 60 minutes.
+#'  1%        5%       10%       25%       50%       75%       90%       95%       99% 
+#'  0.30000   4.95000 5.00000  14.85000  19.68332  20.05000  58.85000  60.20000 920.05000 
+#' We choose a fine scale resolution of 20 minutes because 50% of the data are temporally
+#' separated of 19.68 minutes and 60 minutes because 95% quantiles are around 60 minutes.
 
 
 #' Step 4.2 Thin GPS data at 20-min and 60-min intervals ----
@@ -675,26 +1227,20 @@ regular_60_tbl <- split_into_regular_bursts(
   min_points_per_burst = min_points_per_burst)
 
 
-
 #' Step 4.5a Control the filtered datasets ----
 check_timing <- function(df) {
   
   df %>%
-    dplyr::filter(has_next_regular == TRUE) %>%
     dplyr::summarise(
       resolution_min = dplyr::first(resolution_min),
       n_individuals = dplyr::n_distinct(individual.local.identifier),
-      n_points = dplyr::n(),
+      n_points_retained = dplyr::n(),
       n_bursts = dplyr::n_distinct(burst_id),
+      
       n_valid_transitions = sum(has_next_regular, na.rm = TRUE),
-      median_dt_next_min = median(dt_next_burst_min, na.rm = TRUE),
-      p05_dt_next_min = stats::quantile(dt_next_burst_min, 0.05, na.rm = TRUE),
-      p95_dt_next_min = stats::quantile(dt_next_burst_min, 0.95, na.rm = TRUE),
-      min_dt_next_min = min(dt_next_burst_min, na.rm = TRUE),
-      max_dt_next_min = max(dt_next_burst_min, na.rm = TRUE),
-      median_abs_deviation_min = median(abs(lag_deviation_next_min), na.rm = TRUE),
-      p95_abs_deviation_min = stats::quantile(abs(lag_deviation_next_min), 0.95, na.rm = TRUE)
-    )
+      n_terminal_points = sum(!has_next_regular | is.na(has_next_regular)),
+      
+      expected_valid_transitions = n_points_retained - n_bursts)
 }
 
 timing_20 <- check_timing(regular_20_tbl)
@@ -702,8 +1248,7 @@ timing_60 <- check_timing(regular_60_tbl)
 
 timing_summary <- dplyr::bind_rows(
   timing_20 %>% dplyr::mutate(dataset = "20min_high_resolution"),
-  timing_60 %>% dplyr::mutate(dataset = "60min_intermediate_resolution")
-)
+  timing_60 %>% dplyr::mutate(dataset = "60min_intermediate_resolution"))
 
 print(timing_summary)
 
@@ -722,12 +1267,6 @@ summarise_by_individual <- function(df) {
       .groups = "drop"
     )
 }
-
-summary_by_id <- dplyr::bind_rows(
-  summarise_by_individual(regular_20_tbl),
-  summarise_by_individual(regular_60_tbl))
-
-print(summary_by_id, n = 128)
 
 low_data_individuals <- summary_by_id %>%
   dplyr::filter(n_valid_transitions < 200) %>%
