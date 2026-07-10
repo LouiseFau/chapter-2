@@ -43,19 +43,17 @@ nest_site <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel
 #' (3) inspect the number of behavior observed per behavioral categories at the
 #' population level (and eventually group certain behavioral categories)
 
-
 ge_20min <- ge_20min |>
-  mutate(
+  dplyr::mutate(
     individual.local.identifier = as.character(individual.local.identifier),
-    time_UTC = as.POSIXct(gps_timestamp, tz = "UTC"),
+    time_UTC = as.POSIXct(.data[[time_col]], tz = "UTC"),
     time_local = lubridate::with_tz(time_UTC, tzone = "Europe/Zurich"),
-    rf8fitted = as.character(rf8fitted)
+    behavior_state = as.character(behavior_reclassified)
   ) |>
-  filter(
+  dplyr::filter(
     !is.na(individual.local.identifier),
     !is.na(time_UTC),
-    !is.na(rf8fitted)
-  )
+    !is.na(behavior_state))
 
 # 1.1 Temporal variation (VonBank et al., 2023) ----
 # Calcule continuous covariates representing time of day : the variable cos(Diel) 
@@ -64,43 +62,34 @@ ge_20min <- ge_20min |>
 # until the following 11:59 pm (negative values).
 
 ge_20min <- ge_20min |>
-  mutate(
+  dplyr::mutate(
     decimal_hour = lubridate::hour(time_local) +
       lubridate::minute(time_local) / 60 +
       lubridate::second(time_local) / 3600,
     
     cos_Diel = cos(2 * pi * decimal_hour / 24),
-    sin_Time = sin(2 * pi * decimal_hour / 24)
-  )
+    sin_Time = sin(2 * pi * decimal_hour / 24),
+    date_local = as.Date(time_local))
 
-#' 1.2 Identify daylight versus night locations ----
-tz_loc <- "Europe/Zurich"
-
+#' 1.2 Compute distance to nest ----
+# Remove old nest-distance columns if this block has already been run
 ge_20min <- ge_20min |>
-  mutate(
-    date_local = as.Date(time_local)
-  )
+  dplyr::select(
+    -dplyr::any_of(
+      c(
+        "x_3035",
+        "y_3035",
+        "nest_x_3035",
+        "nest_y_3035",
+        "nest_x_3035.x",
+        "nest_y_3035.x",
+        "nest_x_3035.y",
+        "nest_y_3035.y",
+        "distance_to_nest_km",
+        "distance_to_nest_km.x",
+        "distance_to_nest_km.y")))
 
-sun_times <- suncalc::getSunlightTimes(
-  data = data.frame(
-    date = ge_20min$date_local,
-    lat = ge_20min$location.lat,
-    lon = ge_20min$location.long
-  ),
-  keep = c("sunrise", "sunset"),
-  tz = tz_loc
-)
-
-ge_20min <- ge_20min |>
-  mutate(
-    sunrise = sun_times$sunrise,
-    sunset = sun_times$sunset,
-    is_daylight = time_local >= sunrise & time_local <= sunset,
-    is_night = !is_daylight
-  )
-
-#' 1.3 Compute distance to nest ----
-# Prepare GPS points in EPSG:3035
+# GPS points in EPSG:3035
 pts_3035 <- ge_20min |>
   sf::st_as_sf(
     coords = c("location.long", "location.lat"),
@@ -112,14 +101,14 @@ pts_3035 <- ge_20min |>
 gps_xy_3035 <- sf::st_coordinates(pts_3035)
 
 ge_20min <- ge_20min |>
-  mutate(
+  dplyr::mutate(
     x_3035 = gps_xy_3035[, 1],
     y_3035 = gps_xy_3035[, 2]
   )
 
-# Prepare nest sites in EPSG:3035
+# Nest sites in EPSG:3035
 nest_site_3035 <- nest_site |>
-  mutate(
+  dplyr::mutate(
     individual.local.identifier = as.character(individual.local.identifier)
   ) |>
   sf::st_transform(3035)
@@ -128,38 +117,39 @@ nest_xy_3035 <- sf::st_coordinates(nest_site_3035)
 
 nest_tbl <- nest_site_3035 |>
   sf::st_drop_geometry() |>
-  mutate(
+  dplyr::mutate(
     nest_x_3035 = nest_xy_3035[, 1],
     nest_y_3035 = nest_xy_3035[, 2]
   ) |>
-  select(
+  dplyr::select(
     individual.local.identifier,
     nest_x_3035,
     nest_y_3035
   ) |>
-  distinct(individual.local.identifier, .keep_all = TRUE)
+  dplyr::distinct(
+    individual.local.identifier,
+    .keep_all = TRUE
+  )
 
-# Join nest coordinates to GPS data and compute distance
+# Join nest coordinates and compute distance
 ge_20min <- ge_20min |>
-  left_join(
+  dplyr::left_join(
     nest_tbl,
     by = "individual.local.identifier"
   ) |>
-  mutate(
+  dplyr::mutate(
     distance_to_nest_km = sqrt(
       (x_3035 - nest_x_3035)^2 +
         (y_3035 - nest_y_3035)^2
     ) / 1000
   )
 
-
-# 1.5 Standardize continuous covariates ----
+# 1.3 Standardize continuous covariates ----
 # We standardize continuous covariates to make model coefficients comparable.
 # Temporal covariates are not standardized because they are already cyclic
 # variables bounded between -1 and 1.
-
 ge_20min_stand <- ge_20min |>
-  mutate(
+  dplyr::mutate(
     age_days_z = as.numeric(scale(age_days)),
     distance_to_nest_km_z = as.numeric(scale(distance_to_nest_km)),
     
@@ -168,10 +158,9 @@ ge_20min_stand <- ge_20min |>
     hfi_mean_1000m_z = as.numeric(scale(hfi_mean_1000m))
   )
 
-
-#' 1.5.1 Population-level behavior counts ----
+#' 1.4 Population-level behavior counts ----
 behavior_counts_population <- ge_20min_stand |>
-  count(rf8fitted, name = "n") |>
+  count(behavior_reclassified, name = "n") |>
   mutate(
     prop = n / sum(n),
     prop_percent = 100 * prop
@@ -179,91 +168,40 @@ behavior_counts_population <- ge_20min_stand |>
   arrange(desc(n))
 
 print(behavior_counts_population)
-#' rf8fitted     n        prop prop_percent
-#' Standing 71207 0.651583503   65.1583503
-#' Passive  18732 0.171408179   17.1408179
-#' Feeding  7081 0.064795073    6.4795073
-#' Bodycare 6604 0.060430259    6.0430259
-#' Active   3892 0.035613956    3.5613956
-#' Walking  1349 0.012344097    1.2344097
-#' Undulating 418 0.003824932    0.3824932
-#' 
-#' We decided to group 'undulating' and 'active' in the category flight
-#' We group standing, passive, bodycare under the 'resting' category and then we split 
-#' resting into two categories : 'overnight resting' vs 'diurnal resting'
+#' behavior    n        prop prop_percent
+#' resting 74868 0.72122999    72.122999
+#' flight 21886 0.21083560    21.083560
+#' feeding  7052 0.06793442     6.793442
 
 
-#' 1.5.2 Group behavioral categories ----
-ge_20min_stand <- ge_20min_stand |>
-  mutate(
-    behavior_grouped = case_when(
-      rf8fitted %in% c("Active", "Undulating") ~ "flight",
-      
-      rf8fitted %in% c("Standing", "Passive", "Bodycare") & is_daylight == TRUE ~ "diurnal_resting",
-      rf8fitted %in% c("Standing", "Passive", "Bodycare") & is_night == TRUE ~ "overnight_resting",
-      
-      rf8fitted == "Feeding" ~ "feeding",
-      rf8fitted == "Walking" ~ "walking",
-      
-      rf8fitted %in% c("Standing", "Passive", "Bodycare") & is.na(is_daylight) ~ "resting_unknown_light",
-      
-      TRUE ~ NA_character_
-    ),
-    
-    behavior_grouped = factor(
-      behavior_grouped,
-      levels = c(
-        "flight",
-        "overnight_resting",
-        "diurnal_resting",
-        "feeding",
-        "walking",
-        "resting_unknown_light"
-      )
-    )
-  )
-
-
-# 1.6 Prepare transition table ----
+# 1.5 Prepare transition table ----
 # The transition model requires pairs of consecutive locations within each burst:
 # behavior at time t     = behavior_grouped
 # behavior at time t + 1 = behavior_grouped_next
-
-state_levels_5 <- c(
-  "flight",
-  "overnight_resting",
-  "diurnal_resting",
-  "feeding",
-  "walking"
-)
-
-ge_20min_stand <- ge_20min_stand |>
-  mutate(
-    behavior_grouped = factor(
-      behavior_grouped,
-      levels = state_levels_5
-    )
-  )
-
-burst_col <- if ("burst_id" %in% names(ge_20min_stand)) "burst_id" else "burst_n"
+state_levels_3 <- c("flight","resting","feeding")
 
 transitions_20 <- ge_20min_stand |>
-  filter(!is.na(behavior_grouped)) |>
-  arrange(
-    `individual.local.identifier`,
-    .data[[burst_col]],
-    time_local
+  dplyr::mutate(
+    behavior_grouped = factor(
+      behavior_reclassified,
+      levels = state_levels_3)
   ) |>
-  group_by(
-    `individual.local.identifier`,
-    .data[[burst_col]]
+  dplyr::arrange(
+    individual.local.identifier,
+    burst_id,
+    time_UTC
   ) |>
-  mutate(
+  dplyr::group_by(
+    individual.local.identifier,
+    burst_id
+  ) |>
+  dplyr::mutate(
     behavior_grouped_next = dplyr::lead(behavior_grouped),
-    time_local_next = dplyr::lead(time_local),
+    time_UTC_next = dplyr::lead(time_UTC),
+    gps_row_id_next = dplyr::lead(gps_row_id),
     
-    dt_min = as.numeric(
-      difftime(time_local_next, time_local, units = "mins")
+    transition_dt_min = as.numeric(
+      difftime(time_UTC_next, time_UTC, units = "mins")
     ),
     
     transition_type = paste(
@@ -272,50 +210,47 @@ transitions_20 <- ge_20min_stand |>
       sep = "_to_"
     )
   ) |>
-  ungroup() |>
-  filter(!is.na(behavior_grouped_next)) |>
-  mutate(
-    behavior_grouped = factor(
-      behavior_grouped,
-      levels = state_levels_5
-    ),
-    behavior_grouped_next = factor(
-      behavior_grouped_next,
-      levels = state_levels_5
-    ),
-    burst_uid = interaction(
-      `individual.local.identifier`,
-      .data[[burst_col]],
-      drop = TRUE
-    )
-  )
+  dplyr::ungroup() |>
+  dplyr::filter(
+    has_next_regular == TRUE,
+    !is.na(behavior_grouped),
+    !is.na(behavior_grouped_next))
 
-# 1.7 Empirical transition counts ----
+
+# 1.6 Empirical transition counts ----
 transition_count_matrix_20 <- table(
   from = transitions_20$behavior_grouped,
   to = transitions_20$behavior_grouped_next
 )
 
 print(transition_count_matrix_20)
+#'         to
+#'from      flight resting feeding
+#'flight    9728    9531     767
+#'resting   9020   55925    2601
+#'feeding    628    2619    3095
 
+# 1.7 Empirical transition probability matrix ----
+row_totals_20 <- rowSums(transition_count_matrix_20)
 
-# 1.8 Empirical transition probability matrix ----
-transition_matrix_20 <- prop.table(
+transition_matrix_20 <- sweep(
   transition_count_matrix_20,
-  margin = 1
+  MARGIN = 1,
+  STATS = row_totals_20,
+  FUN = "/"
 )
 
+transition_matrix_20[row_totals_20 == 0, ] <- NA
+
 print(round(transition_matrix_20, 3))
-#' we found :
-#' from                flight overnight_resting diurnal_resting feeding walking
-#' flight             0.079             0.004           0.856   0.042   0.019
-#' overnight_resting  0.005             0.879           0.105   0.009   0.003
-#' diurnal_resting    0.038             0.003           0.911   0.037   0.011
-#' feeding            0.023             0.005           0.483   0.467   0.022
-#' walking            0.049             0.006           0.807   0.111   0.026
+#'            to
+#'  from      flight resting feeding
+#'  flight   0.486   0.476   0.038
+#'  resting  0.134   0.828   0.039
+#'  feeding  0.099   0.413   0.488
 
 
-# Long-format transition table
+# Long-format transition table to inspect rare transitions
 transition_counts_20 <- as.data.frame(
   transition_count_matrix_20,
   stringsAsFactors = FALSE
@@ -340,7 +275,6 @@ transition_counts_20 <- as.data.frame(
 
 print(transition_counts_20)
 
-# Rare transitions
 rare_transitions_20 <- transition_counts_20 |>
   filter(n > 0, n < 30) |>
   arrange(n)
@@ -349,7 +283,7 @@ print(rare_transitions_20)
 
 
 #'##############################################################################
-#' ### Step 2 : model fitting
+#' ### Step 3 : model fitting
 #'
 #' **Philosophy**:
 #' We fit one multinomial GAM per HFI spatial scale.
@@ -360,12 +294,10 @@ print(rare_transitions_20)
 #' The departure state is:
 #'   behavior_grouped
 #'
-#' The 5 states are:
+#' The 3 states are:
 #'   1. flight
-#'   2. overnight_resting
-#'   3. diurnal_resting
+#'   2. resting
 #'   4. feeding
-#'   5. walking
 #'
 #' We compare:
 #'   - a null model without HFI
@@ -373,12 +305,10 @@ print(rare_transitions_20)
 #'   - a model with mean HFI within 500 m
 #'   - a model with mean HFI within 1000 m
 #'
-#' For mgcv::multinom(K = 4), the response must be coded as:
+#' For mgcv::multinom(K = 2), the response must be coded as:
 #'   0 = flight
-#'   1 = overnight_resting
-#'   2 = diurnal_resting
-#'   3 = feeding
-#'   4 = walking
+#'   1 = resting
+#'   2 = feeding
 #'
 #' The first state, flight, is the reference arrival state.
 #'##############################################################################
