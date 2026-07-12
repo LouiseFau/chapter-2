@@ -971,7 +971,6 @@ gps_beh_15w[
 
 
 #' Step 3.6: diagnostics ----
-
 behavior_counts_raw <- gps_beh_15w[
   ,
   .N,
@@ -1371,14 +1370,17 @@ saveRDS(regular_60_sf,
 #'------------------------------------------------------------------------------
 #' Step 5 : extract human footprint index around GPS locations
 #' 
-#' **Steps:**
-#' (1) extract covariates values at three buffer size : 
-#' - hfi_mean_100m  = HFI value of the pixel containing the GPS point
-#' - hfi_mean_500m  = mean HFI of pixels within 500 m of that pixel
-#' - hfi_mean_1000m = mean HFI of pixels within 1000 m of that pixel
-#' (2) export the RDS file
+#' **Extract:**
+#' - HFI value of the pixel containing the GPS point
+#' - mean, maximum, and 75th percentile HFI within 500 m
+#' - mean, maximum, and 75th percentile HFI within 1000 m
 
 
+
+regular_20_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/GE_20_min_thinned_behavior_assigned.rds")
+terra::terraOptions(threads = 5)
+
+# Function for HFI extraction
 terra::terraOptions(threads = 5)
 
 # Function for HFI extraction
@@ -1402,7 +1404,7 @@ extract_hfi <- function(df_sf,
     ID = FALSE
   )[[1]]
   
-  # Extract mean HFI in buffers
+  # Extract HFI statistics in buffers
   for (r in buffers_m) {
     
     # Create buffers in the metric CRS of the GPS data, EPSG:3035
@@ -1411,8 +1413,8 @@ extract_hfi <- function(df_sf,
     # Project buffers to raster CRS
     buf_r <- terra::project(buf, terra::crs(raster))
     
-    # Extract mean HFI inside buffer
-    val <- terra::extract(
+    # Mean HFI inside buffer
+    df[[paste0("hfi_mean_", r, "m")]] <- terra::extract(
       raster,
       buf_r,
       fun = mean,
@@ -1420,34 +1422,63 @@ extract_hfi <- function(df_sf,
       ID = FALSE
     )[[1]]
     
-    df[[paste0("hfi_mean_", r, "m")]] <- val
+    # Maximum HFI inside buffer
+    df[[paste0("hfi_max_", r, "m")]] <- terra::extract(
+      raster,
+      buf_r,
+      fun = max,
+      na.rm = TRUE,
+      ID = FALSE
+    )[[1]]
+    
+    # Third quartile of HFI inside buffer
+    df[[paste0("hfi_q75_", r, "m")]] <- terra::extract(
+      raster,
+      buf_r,
+      fun = function(x, ...) {
+        stats::quantile(
+          x,
+          probs = 0.75,
+          na.rm = TRUE,
+          names = FALSE
+        )
+      },
+      ID = FALSE
+    )[[1]]
   }
   
-  df}
+  df
+}
 
 regular_20_hfi <- extract_hfi(regular_20_sf)
 regular_60_hfi <- extract_hfi(regular_60_sf)
 
 # Controls
-regular_20_hfi[
-  ,
-  c("hfi_point", "hfi_mean_500m", "hfi_mean_1000m")
-] |>
+hfi_columns <- c(
+  "hfi_point",
+  "hfi_mean_500m",
+  "hfi_max_500m",
+  "hfi_q75_500m",
+  "hfi_mean_1000m",
+  "hfi_max_1000m",
+  "hfi_q75_1000m"
+)
+
+regular_20_hfi[, hfi_columns] |>
   summary()
 
-regular_60_hfi[
-  ,
-  c("hfi_point", "hfi_mean_500m", "hfi_mean_1000m")
-] |>
+regular_60_hfi[, hfi_columns] |>
   summary()
 
 # Save outputs
 saveRDS(
   regular_20_hfi,
   file.path(output_dir, "GE_20_min_thinned_behavior_assigned_hfi.rds"),
-  compress = "gzip")
+  compress = "gzip"
+)
 
 saveRDS(
   regular_60_hfi,
   file.path(output_dir, "GE_60_min_thinned_behavior_assigned_hfi.rds"),
-  compress = "gzip")
+  compress = "gzip"
+)
