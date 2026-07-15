@@ -1,48 +1,42 @@
-#' ############################################################################# 
-#' Title: Preparation of GPS data for HHM
+#' ----------------------------------------------------------------------------- 
+# Title: Preparation of GPS based behavioral classification data for HHM ----
 #' Authors : Louise Faure
 #' Date : 25.06.26
 #' Purpose : 
 #' (1) filter location to the first fifteen weeks of dispersal, 
-#' (2) classify behaviours,
+#' (2) classify behaviours based on gps position,
 #' (3) thin the data at two temporal resolution (20min and 60min) and split into
 #' burst,
 #' (4) extract environmental covariates at the two temporal scale and within 
-#' three different buffers
-#' #############################################################################
+#' three different buffers (only for HFI)
+#' -----------------------------------------------------------------------------
+
 
 
 
 # 0. Setup ----
 library(move2)
 library(sf)
+library(terra)
 library(dplyr)
 library(tidyverse)
 library(lubridate)
-library(ggplot2)
-library(ggspatial)
-library(rnaturalearth)
-library(atlastools)
 library(data.table)
 library(EMbC)
-library(suncalc)
 
-# Load GPS data 
-output_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
+# Define out put directory
+output_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
 
-# Géoïde and digital elevation model
-geo <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/geoide/us_nga_egm96_15.tif")
-dem <- terra::rast("C:/Users/lfaure7/OneDrive/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
+# Géoïde, digital elevation model and other ground based informations
+geo <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/geoide/us_nga_egm96_15.tif")
+dem <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
+human_footprint <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
 
-# raster layers
-human_footprint <- terra::rast("C:/Users/lfaure7/Desktop/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
+# Emigration dates and golden eagle data
+emig_dates <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
+nest_site <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/nest site location/nest_site_location/nest_site_location.rds")
 
-
-# emigration dates and golden eagle data
-emig_dates <- readRDS("C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/donnees/emigration dates/emigration_dates_20250417.rds")
-nest_site <- readRDS("~/git/chapter-2/preparation donnee aigle ssf/donnees/nest site location/nest_site_location/nest_site_location.rds")
-
-rds_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/preparation donnee aigle ssf/donnees/no_burst_GE/no_burst_GE"
+rds_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/no_burst_GE/no_burst_GE"
 rds_files <- tools::file_path_sans_ext(list.files(rds_dir, pattern = "\\.rds$", ignore.case = TRUE))
 rds_ids   <- as.numeric(gsub("_gpsNoDup_moveObj", "", rds_files))
 
@@ -51,99 +45,125 @@ emig_dates_filtered <- emig_dates[emig_dates$did_disperse == TRUE &
                                     emig_dates$individual.id %in% rds_ids, ]
 rds_files_filtered  <- rds_files[rds_ids %in% emig_dates_filtered$individual.id]
 
+# Parameters
+gps_dop_max <- 10
+horizontal_accuracy_max <- 40
 
-################################################################################
-#' ### STEP 1 : spatio temporal filtering 
 
+
+
+#' -----------------------------------------------------------------------------
+# STEP 1 : spatio-temporal filtering ----
+#'
+#' **Steps:**
 #' (i) keep only GPS locations within the first 15 weeks after emigration date
-#' (ii) compute height above ground (geoid + DEM correction)
-#' (iii) compute sunrise and sunset
-################################################################################
+#' (ii) compute height above ground using geoid and DEM corrections
+#' (iii) remove GPS locations with poor positional accuracy
+#' (iv) remove location at weird altitude below or above the ground
 
-tz_loc <- "Europe/Zurich"
 
+# 1.1 Loop through the files ----
 dispersal_data <- lapply(rds_files_filtered, function(f) {
   
   id  <- as.numeric(gsub("_gpsNoDup_moveObj", "", f))
   obj <- readRDS(file.path(rds_dir, paste0(f, ".rds")))
   df  <- as.data.frame(obj)
-
-  df <- df[, c("individual.local.identifier", "timestamp",
-               "location.long", "location.lat",
-               "height.above.ellipsoid", "ground.speed",
-               "eobs.speed.accuracy.estimate", "eobs.horizontal.accuracy.estimate",
-               "gps.dop", "vert.speed",
-               "turn.angle", "step.length", "gr.speed", "eobs.type.of.fix")]
+  
+  df <- df[, c(
+    "individual.local.identifier",
+    "timestamp",
+    "location.long",
+    "location.lat",
+    "height.above.ellipsoid",
+    "ground.speed",
+    "eobs.speed.accuracy.estimate",
+    "eobs.horizontal.accuracy.estimate",
+    "gps.dop",
+    "vert.speed",
+    "turn.angle",
+    "step.length",
+    "gr.speed",
+    "eobs.type.of.fix")]
   
   df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
+  
   emig_dt <- emig_dates_filtered$dispersal_date[emig_dates_filtered$individual.id == id]
   
-  # 1.0 Retain only the first fifteen weeks of dispersal ----
-  df <- df[df$timestamp >= emig_dt &
-             df$timestamp <= emig_dt + 105 * 24 * 3600, ]
+  # 1.1.1 Retain only the first fifteen weeks of dispersal ----
+  df <- df[
+    df$timestamp >= emig_dt &
+      df$timestamp <= emig_dt + 105 * 24 * 3600,]
+  
+  # Stop processing this individual if no point remains
+  if (nrow(df) == 0) {return(df)}
   
   df$individual.id   <- id
   df$dispersal_date  <- emig_dt
   df$days_since_emig <- as.numeric(difftime(df$timestamp, emig_dt, units = "days"))
   
-  # 1.1 Calculate flight height by first using the geoide ----
-  xy_ll <- as.matrix(df[, c("location.long", "location.lat")])
-  N     <- terra::extract(geo, xy_ll)[, 1]
   
+  # 1.1.2 Calculate height above ground ----
+  xy_ll <- as.matrix(df[, c("location.long", "location.lat")])
+  
+  N <- terra::extract(geo, xy_ll)[, 1]
+  
+  # Convert ellipsoid height to height above mean sea level
   df$height_msl <- df$height.above.ellipsoid - N
   
-  # applied the dem crs
-  pts     <- terra::vect(df[, c("location.long", "location.lat")],
-                         geom = c("location.long", "location.lat"),
-                         crs  = "EPSG:4326")
-  pts_dem <- terra::project(pts, crs(dem))
-  df$dem_elevation <- terra::extract(dem, pts_dem)[, 2]  
+  # Project GPS locations to the DEM coordinate system
+  pts <- terra::vect(
+    df[, c("location.long", "location.lat")],
+    geom = c("location.long", "location.lat"),
+    crs = "EPSG:4326")
   
-  # calculate flight height
+  pts_dem <- terra::project(pts, terra::crs(dem))
+  df$dem_elevation <- terra::extract(dem, pts_dem)[, 2]
+  
+  # Calculate height above ground
   df$height_above_ground <- df$height_msl - df$dem_elevation
   
-  # 1.2 Filter the locations with weird hights ----
-  df <- df[!is.na(df$height_above_ground) &
-             df$height_above_ground > -200 &
-             df$height_above_ground < 3000, ]
+  # 1.1.3 Remove locations with poor GPS accuracy ----
+  df <- df %>%
+    mutate(
+      poor_gps_dop =
+        !is.na(gps.dop) &
+        gps.dop > gps_dop_max,
+      
+      poor_horizontal_accuracy =
+        !is.na(eobs.horizontal.accuracy.estimate) &
+        eobs.horizontal.accuracy.estimate >
+        horizontal_accuracy_max,
+      
+      poor_location_accuracy =
+        poor_gps_dop |
+        poor_horizontal_accuracy
+    ) %>%
+    filter(!poor_location_accuracy)
   
-  # If no data remain after height filtering, return an empty data frame
-  if (nrow(df) == 0) {
-    return(df)
-  }
   
-  # 1.3 Identify night vs day position ----
-  # Convert timestamp to local time
-  df$time_local <- lubridate::with_tz(df$timestamp, tz = tz_loc)
-  df$date_local <- as.Date(df$time_local)
+  # Stop processing this individual if no point remains
+  if (nrow(df) == 0) {return(df)}
   
-  # Compute sunrise and sunset per row, using local date and GPS location
-  sun_times <- suncalc::getSunlightTimes(
-    data = data.frame(
-      date = df$date_local,
-      lat  = df$location.lat,
-      lon  = df$location.long
-    ),
-    keep = c("sunrise", "sunset"),
-    tz = tz_loc
-  )
+  # 1.1.4 Retain only locations with available height information ----
+  df <- df %>%
+    filter(
+      !is.na(height_above_ground),
+      is.finite(height_above_ground))
   
-  # Attach sunrise and sunset to the dataset
-  df$sunrise <- sun_times$sunrise
-  df$sunset  <- sun_times$sunset
+  # Stop processing this individual if no point remains
+  if (nrow(df) == 0) {return(df)}
   
-  # Define daylight / night for each GPS point
-  df$is_daylight <- df$time_local >= df$sunrise & df$time_local <= df$sunset
-  df$is_night    <- !df$is_daylight
-  
-  # 1.4 Calculate age since emigration ----
+  # 1.1.5 Calculate age since emigration ----
   df$age_since_emig_days <- as.numeric(
-    difftime(df$timestamp, emig_dt, units = "days")
-  )
+    difftime(
+      df$timestamp,
+      emig_dt,
+      units = "days"))
   
   df$age_since_emig_weeks <- df$age_since_emig_days / 7
   
-  # 1.5 Compute distance to nest site ----
+  
+  # 1.1.6 Compute distance to nest site ----
   pts_3035 <- sf::st_as_sf(
     df,
     coords = c("location.long", "location.lat"),
@@ -152,7 +172,7 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   ) %>%
     sf::st_transform(3035)
   
-  # Keep projected GPS coordinates for later steps
+  # Keep projected GPS coordinates
   xy_3035 <- sf::st_coordinates(pts_3035)
   
   df$x_3035 <- xy_3035[, 1]
@@ -165,46 +185,79 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
         as.character(df$individual.local.identifier[1])
     )
   
-  # Distance (in km) from each GPS point to the nest ----
+  # Distance from each GPS point to the nest, in kilometres
   df$distance_to_nest_km <- as.numeric(
-    sf::st_distance(pts_3035, nest_i)
-  ) / 1000
+    sf::st_distance(
+      pts_3035,
+      nest_i)) / 1000
   
   df
   
 })
 
-dispersal_data <- bind_rows(dispersal_data)
+
+# Combine all individuals
+dispersal_data <- dplyr::bind_rows(dispersal_data)
 rownames(dispersal_data) <- NULL
 
 
-################################################################################
-#' STEP 2 : EMbC behavioural classification on the full filtered dataset
+# 1.2 Inspect and filter extreme height-above-ground values ----
+# Compile the lower 1% quantile and the observed maximum before filtering
+height_limits_before_filter <- dispersal_data %>%
+  summarise(
+    height_q01 = quantile(
+      height_above_ground,
+      probs = 0.01,
+      na.rm = TRUE
+    ),
+    height_max = max(
+      height_above_ground,
+      na.rm = TRUE))
+
+print(height_limits_before_filter)
+
+
+# Extract the q01 value as a numeric threshold
+height_q01 <- height_limits_before_filter$height_q01
+
+
+# Remove locations below q01 and above 3000 m
+dispersal_data <- dispersal_data %>%
+  filter(
+    !is.na(height_above_ground),
+    is.finite(height_above_ground),
+    height_above_ground >= height_q01,
+    height_above_ground <= 3000)
+
+
+
+
+
+
+#' -----------------------------------------------------------------------------
+#' STEP 2 : EMbC behavioural classification on the full filtered dataset ----
 #'
 #' **Ref.** Garriga et al., 2016; Nourani et al. workflow
 #'
 #' (1) Classification through embc function
-#' (2) identification of overnight resting versus day resting sites
-################################################################################
+#' (2) Reclassify cluster 2
 
-dispersal_data <- dispersal_data %>%
-  arrange(individual.local.identifier, timestamp)
+
+
+# 2.0 Classify behaviors ----
+dispersal_data <- dispersal_data %>% arrange(individual.local.identifier, timestamp)
 
 # Bivariate matrix: exactly two variables
 behavioural_classification <- data.frame(
   ground.speed = as.numeric(dispersal_data$ground.speed),
-  height_above_ground = as.numeric(dispersal_data$height_above_ground)
-)
+  height_above_ground = as.numeric(dispersal_data$height_above_ground))
 
 complete_idx <- which(
   complete.cases(behavioural_classification) &
     is.finite(behavioural_classification$ground.speed) &
-    is.finite(behavioural_classification$height_above_ground)
-)
+    is.finite(behavioural_classification$height_above_ground))
 
-behavioural_classification <- data.matrix(
-  behavioural_classification[complete_idx, c("ground.speed", "height_above_ground")]
-)
+behavioural_classification <- data.matrix(behavioural_classification[complete_idx, c("ground.speed", "height_above_ground")])
 
 # Call EMbC
 embc <- EMbC::embc(behavioural_classification)
@@ -219,98 +272,101 @@ dispersal_data$behavior_cluster <- NA_integer_
 dispersal_data$behavior_cluster_raw[complete_idx] <- embc@A
 dispersal_data$behavior_cluster[complete_idx] <- embc_smoothed@A
 
-# Check the four clusters
+# Check the four clusters after height filtering
 cluster_summary_full <- dispersal_data %>%
   filter(!is.na(behavior_cluster)) %>%
   group_by(behavior_cluster) %>%
   summarise(
-    speed_med  = median(ground.speed, na.rm = TRUE),
-    height_med = median(height_above_ground, na.rm = TRUE),
+    speed_med = median(
+      ground.speed,
+      na.rm = TRUE
+    ),
+    height_med = median(
+      height_above_ground,
+      na.rm = TRUE
+    ),
     n = n(),
     .groups = "drop"
   ) %>%
   arrange(behavior_cluster)
 
 print(cluster_summary_full)
+# behavior_cluster speed_med height_med      n
+# 1                  0.11       13.8        149941
+# 2                  0.78       31.5        17195
+# 3                 10.4        33.4        28146
+# 4                 12.7       297.         15589
 
-#' We obtain and decide to consider cluster 1 and 2 as terrestrial
-#' behavior_cluster speed_med height_med      n
-#'  1               0.12       13.5        166905
-#'  2               0.81       30.7        20355
-#'  3              10.1        34.1        33613
-#'  4              13.1       361.0         17154
+#' Cluster 2 is difficult to interpret. 
 
+# 2.1 Reclassification of cluster 2 ----
+# Extract cluster 2
+cluster_2 <- dispersal_data %>%
+  filter(behavior_cluster == 2)
 
-behavior_cluster_labels <- c(
-  "1" = "low_speed_low_height",
-  "2" = "low_speed_moderate_height",
-  "3" = "high_speed_low_height",
-  "4" = "high_speed_high_height"
-)
+# Compile Q25, median and Q90 for speed and height
+cluster_2_distribution <- cluster_2 %>%
+  summarise(
+    across(
+      c(ground.speed, height_above_ground),
+      list(
+        q25 = ~ quantile(.x, 0.25, na.rm = TRUE),
+        median = ~ median(.x, na.rm = TRUE),
+        q90 = ~ quantile(.x, 0.90, na.rm = TRUE)),
+      .names = "{.col}_{.fn}"))
 
-terrestrial_clusters <- c(1, 2)
+print(cluster_2_distribution) 
+# we can see that elevation have weird values while speed is always lower than 5 m/s.
 
-dispersal_data <- dispersal_data %>%
-  dplyr::mutate(
-    behavior_cluster_name = dplyr::recode(
-      as.character(behavior_cluster),
-      !!!behavior_cluster_labels,
-      .default = NA_character_
-    ),
-    
-    behavior_broad = dplyr::case_when(
-      behavior_cluster %in% terrestrial_clusters ~ "terrestrial",
-      behavior_cluster %in% c(3, 4) ~ "flight",
-      TRUE ~ NA_character_
-    ),
-    
-    behavior_final = dplyr::case_when(
-      behavior_cluster %in% terrestrial_clusters & is_night ~ "overnight_resting",
-      behavior_cluster %in% terrestrial_clusters & is_daylight ~ "daily_resting",
-      behavior_cluster == 3 ~ "high_speed_low_height",
-      behavior_cluster == 4 ~ "high_speed_high_height",
-      TRUE ~ NA_character_
+  
+# Estimate an empirical vertical-error threshold from presumed terrestrial points
+# Estimate the empirical vertical-accuracy threshold from cluster 1
+vertical_accuracy_max <- dispersal_data %>%
+  filter(
+    behavior_cluster == 1,
+    is.finite(height_above_ground)
+  ) %>%
+  summarise(
+    threshold = quantile(
+      abs(height_above_ground),
+      probs = 0.90,
+      na.rm = TRUE
     )
-  )
-
-# check final classification
-behavior_summary_full <- dispersal_data %>%
-  dplyr::count(
-    behavior_cluster,
-    behavior_cluster_name,
-    behavior_broad,
-    behavior_final
   ) %>%
-  dplyr::group_by(behavior_broad) %>%
-  dplyr::mutate(prop_within_broad = n / sum(n)) %>%
-  dplyr::ungroup()
+  pull(threshold)
 
-print(behavior_summary_full)
+# Add a 20% tolerance margin
+vertical_accuracy_max <- vertical_accuracy_max * 1.20
+print(vertical_accuracy_max)
 
-cluster_summary_named <- dispersal_data %>%
-  dplyr::filter(!is.na(behavior_cluster)) %>%
-  dplyr::group_by(behavior_cluster, behavior_cluster_name, behavior_broad) %>%
-  dplyr::summarise(
-    speed_med = median(ground.speed, na.rm = TRUE),
-    speed_mean = mean(ground.speed, na.rm = TRUE),
-    height_med = median(height_above_ground, na.rm = TRUE),
-    height_mean = mean(height_above_ground, na.rm = TRUE),
-    n = dplyr::n(),
-    .groups = "drop"
-  ) %>%
-  dplyr::arrange(behavior_cluster)
+# Count observations before filtering
+n_before <- nrow(dispersal_data)
 
-print(cluster_summary_named)
+# Remove cluster-2 points above the empirical vertical-accuracy threshold
+dispersal_data <- dispersal_data %>%
+  filter(
+    behavior_cluster != 2 |
+      height_above_ground <= vertical_accuracy_max)
+
+# Count and print removed GPS locations
+n_removed <- n_before - nrow(dispersal_data)
+cat("Number of GPS locations removed:", n_removed, "\n")
+
+# 2.2 Attribute a name to the cluster ----
+Cluster 1 and 2 are terrestrial and cluster 3 and 4 are aerian 
 
 
-################################################################################
-#' Step 3. Data cleaning
+
+
+
+#'------------------------------------------------------------------------------
+#' Step 3. Data thining ----
 #' 
 #' (1) inspect raw GPS sampling intervals;
 #' (2) create one high-resolution dataset at 20 min;
 #' (3) create one intermediate-resolution dataset at 60 min;
 #' (4) split tracks into bursts
-################################################################################
+
 
 
 # 3.1 Inspect raw GPS data ----
@@ -372,8 +428,7 @@ summary(time_lags$dt_min)
 quantile(
   time_lags$dt_min,
   probs = c(0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99),
-  na.rm = TRUE
-)
+  na.rm = TRUE)
 
 #' We found 
 #' Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
