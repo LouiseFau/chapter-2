@@ -32,6 +32,12 @@ geo <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/M
 dem <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/pretraitements/Region-Alpes-Dem/region-alpes-dem.tif")
 human_footprint <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
 
+
+ruggedness < terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/pretraitements/DEM_25m/TRI/TRI.tif")
+slope <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/pretraitements/DEM_25m/slope/slope_25.tif")
+dist_ridgeline <- terra::rast("Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/donnees/raster/topography/distance_to_ridge_line_complete_version.tif")
+landcover <- rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data_landuse/Data_CLC/CLC_Alps/CLC_longlat/CLC_longlat.tif")
+
 # Emigration dates and golden eagle data
 emig_dates <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
 nest_site <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/nest site location/nest_site_location/nest_site_location.rds")
@@ -47,7 +53,7 @@ rds_files_filtered  <- rds_files[rds_ids %in% emig_dates_filtered$individual.id]
 
 # Parameters
 gps_dop_max <- 10
-horizontal_accuracy_max <- 40
+terra::terraOptions(threads = 5) 
 
 
 
@@ -127,18 +133,9 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
     mutate(
       poor_gps_dop =
         !is.na(gps.dop) &
-        gps.dop > gps_dop_max,
-      
-      poor_horizontal_accuracy =
-        !is.na(eobs.horizontal.accuracy.estimate) &
-        eobs.horizontal.accuracy.estimate >
-        horizontal_accuracy_max,
-      
-      poor_location_accuracy =
-        poor_gps_dop |
-        poor_horizontal_accuracy
+        gps.dop > gps_dop_max
     ) %>%
-    filter(!poor_location_accuracy)
+    filter(!poor_gps_dop)
   
   
   # Stop processing this individual if no point remains
@@ -235,7 +232,7 @@ dispersal_data <- dispersal_data %>%
 
 
 #' -----------------------------------------------------------------------------
-#' STEP 2 : EMbC behavioural classification on the full filtered dataset ----
+# STEP 2 : EMbC behavioural classification on the full filtered dataset ----
 #'
 #' **Ref.** Garriga et al., 2016; Nourani et al. workflow
 #'
@@ -353,14 +350,26 @@ n_removed <- n_before - nrow(dispersal_data)
 cat("Number of GPS locations removed:", n_removed, "\n")
 
 # 2.2 Attribute a name to the cluster ----
-Cluster 1 and 2 are terrestrial and cluster 3 and 4 are aerian 
+dispersal_data <- dispersal_data %>%
+  mutate(
+    behavior_binary = case_when(
+      behavior_cluster %in% c(1, 2) ~ "terrestrial",
+      behavior_cluster %in% c(3, 4) ~ "aerial",
+      TRUE                          ~ NA_character_
+    ),
+    behavior_binary = factor(
+      behavior_binary,
+      levels = c("terrestrial", "aerial")))
+
+# Check the number of locations in each behavioral category
+print(table(dispersal_data$behavior_binary, useNA = "ifany"))
 
 
 
 
 
 #'------------------------------------------------------------------------------
-#' Step 3. Data thining ----
+# Step 3. Data thining ----
 #' 
 #' (1) inspect raw GPS sampling intervals;
 #' (2) create one high-resolution dataset at 20 min;
@@ -548,7 +557,6 @@ split_into_regular_bursts <- function(df,
 }
 
 # 3.4 create 20-min and 60-min datasets ----
-
 thin_20_tbl <- thin_move2_interval(
   locs = locs_3035,
   interval_unit = "20 minutes",
@@ -603,14 +611,13 @@ timing_60 <- check_timing(regular_60_tbl)
 
 timing_summary <- bind_rows(
   timing_20 %>% mutate(dataset = "20min_high_resolution"),
-  timing_60 %>% mutate(dataset = "60min_intermediate_resolution")
-)
+  timing_60 %>% mutate(dataset = "60min_intermediate_resolution"))
 
 print(timing_summary)
 #' we obtain 
 #' resolution_min n_individuals n_points n_bursts n_valid_transitions median_dt_next_min p05_dt_next_min p95_dt_next_min min_dt_next_min max_dt_next_min
-#'           20            62   100865    10813              100865                 20            15.0            20.4              15              25
-#'           60            66    58521     6958               58521                 60            59.5            60.5              50              70
+#' 20            62              76613    12914               76613                 20            15.0            20.3              15              25                   0.0833
+#' 60            66              40538     8031               40538                 60            59.4            60.5              50              70                   0.150 
 
 # inspect individual differences
 summarise_by_individual <- function(df) {
@@ -629,8 +636,7 @@ summarise_by_individual <- function(df) {
 
 summary_by_id <- bind_rows(
   summarise_by_individual(regular_20_tbl),
-  summarise_by_individual(regular_60_tbl)
-)
+  summarise_by_individual(regular_60_tbl))
 
 print(summary_by_id, n = 128)
 
@@ -645,39 +651,47 @@ regular_20_sf <- sf::st_as_sf(
   regular_20_tbl,
   coords = c("x_3035", "y_3035"),
   crs = 3035,
-  remove = FALSE
-)
+  remove = FALSE)
 
 regular_60_sf <- sf::st_as_sf(
   regular_60_tbl,
   coords = c("x_3035", "y_3035"),
   crs = 3035,
-  remove = FALSE
-)
+  remove = FALSE)
 
-saveRDS(
-  regular_20_sf,
-  file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds"))
+saveRDS(regular_20_sf, file.path("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds"))
 
-saveRDS(
-  regular_60_sf,
-  file.path("C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds"))
+saveRDS(regular_60_sf, file.path("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds"))
 
 
-#'##############################################################################
-#' Step 4 : extract human footprint index around GPS locations
+
+
+
+#'------------------------------------------------------------------------------
+# Step 4 : extract human footprint index and control covariates ----
 #'
-#' (1) extract covariates values at three buffer size : 
-#' - hfi_mean_100m  = HFI value of the pixel containing the GPS point
+#'** Steps:**
+#' (1) evalute the horizontal accuracy to define the buffer around each GPS point
+#' that should be used to extract the environmental covariates
+#' (2) extract all numerical control covariates and HFI values in a 30m buffer
+#' (3) for categorical covariates, such as landcover, create three categorical 
+#' variables that represent the percentage of landcover in a 30m buffer for forest, 
+#' grassland and bare rocks. 
+#' (4) extract hfi values at two other buffer scale :
 #' - hfi_mean_500m  = mean HFI of pixels within 500 m of that pixel
 #' - hfi_mean_1000m = mean HFI of pixels within 1000 m of that pixel
-#' (2) export the RDS file
-#'##############################################################################
+#' (5) calculate continuous temporal covariates for the diurnal rythm
+#' - the variable cos(Diel) represents diurnal (negative values) and nocturnal (positive values) periods,
+#' - sin(Time) represents midnight until 11:59 am (positive values) and noon until the following 11:59 pm (negative values).
+#' (6) export the RDS file
 
-output_dir <- "C:/Users/lfaure7/Documents/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
 
-# Terra parameters
-terra::terraOptions(threads = 5)
+# 4.1 Evaluate the horizontal error ----
+
+# 4.2 calculate cos(Diel) and sin(Time) ---
+
+# 4.3 Extract environmental variables ----
+
 
 # Function for covariate extraction
 hfi_crs <- terra::crs(human_footprint)
