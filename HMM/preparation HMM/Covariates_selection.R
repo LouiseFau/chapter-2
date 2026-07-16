@@ -58,21 +58,29 @@ transitions_60 <- GE_60_min_covariates_hfi %>%
     timestamp
   ) %>%
   mutate(
-    # Standardise state names
     behavior_binary_clean = tolower(
       trimws(
-        as.character(behavior_binary))
+        as.character(behavior_binary)
+      )
     ),
     
-    # Correct possible alternative spelling
     behavior_binary_clean = dplyr::recode(
       behavior_binary_clean,
       "aerian" = "aerial",
-      "flight" = "aerial"),
+      "flight" = "aerial"
+    ),
     
     behavior_from = factor(
       behavior_binary_clean,
-      levels = state_levels)
+      levels = state_levels
+    ),
+    
+    landcover_from = case_when(
+      landcover_100m %in% c(2, 3, 4) ~ "forest",
+      landcover_100m %in% c(5, 6, 7) ~ "low_vegetation",
+      landcover_100m %in% c(8, 9, 11) ~ "rocky_terrain",
+      TRUE ~ NA_character_
+    )
   ) %>%
   group_by(
     individual.local.identifier,
@@ -80,16 +88,23 @@ transitions_60 <- GE_60_min_covariates_hfi %>%
   ) %>%
   mutate(
     behavior_to = dplyr::lead(
-      behavior_from),
+      behavior_from
+    ),
+    
+    landcover_to = dplyr::lead(
+      landcover_from
+    ),
     
     timestamp_next = dplyr::lead(
-      timestamp),
+      timestamp
+    ),
     
     dt_min = as.numeric(
       difftime(
         timestamp_next,
         timestamp,
-        units = "mins")
+        units = "mins"
+      )
     )
   ) %>%
   ungroup() %>%
@@ -98,19 +113,38 @@ transitions_60 <- GE_60_min_covariates_hfi %>%
     !is.na(behavior_to)
   ) %>%
   mutate(
-    individual_id = factor(
-      individual.local.identifier),
+    landcover_from = factor(
+      landcover_from,
+      levels = c(
+        "rocky_terrain",
+        "low_vegetation",
+        "forest"
+      )
+    ),
     
-    # Binary response:
-    # 1 = next state is terrestrial
-    # 0 = next state is aerial
+    landcover_to = factor(
+      landcover_to,
+      levels = c(
+        "rocky_terrain",
+        "low_vegetation",
+        "forest"
+      )
+    ),
+    
+    individual_id = factor(
+      individual.local.identifier
+    ),
+    
     next_terrestrial = as.integer(
-      behavior_to == "terrestrial"),
+      behavior_to == "terrestrial"
+    ),
     
     transition_type = paste(
       behavior_from,
       behavior_to,
-      sep = "_to_"))
+      sep = "_to_"
+    )
+  )
 
 
 # 1.2 Nbr of transitions & bursts per individual and thinning ----
@@ -306,12 +340,7 @@ transitions_60 <- transitions_60 %>%
     across(
       all_of(continuous_covariates),
       standardise_variable,
-      .names = "{.col}_z"
-    )
-  )
-
-# 2.1.3 Prepare landcover covariates ---- 
-
+      .names = "{.col}_z"))
 
 # 2.2 Functions used to inspect model fitting ----
 model_converged <- function(model) {
@@ -482,24 +511,49 @@ covariate_form_models_60 <- lapply(
 
 names(covariate_form_models_60) <- continuous_covariates
 
-
 # 2.5.2 Compile the AIC results ----
-
-# 2.5.3 Retain the form with the best AIC, and privilege linear form if AIC < 2 ---
-covariate_form_comparison_60 <- covariate_form_comparison_60 %>%
-  group_by(covariate) %>%
+covariate_form_comparison_60 <- dplyr::bind_rows(
+  lapply(
+    covariate_form_models_60,
+    function(model_results) {
+      model_results$comparison
+    }
+  )
+) %>%
+  group_by(
+    covariate
+  ) %>%
+  arrange(
+    AIC,
+    .by_group = TRUE
+  ) %>%
   mutate(
     AIC_min = min(AIC),
-    delta_AIC = AIC - AIC_min,
-    
+    delta_AIC = AIC - AIC_min
+  ) %>%
+  ungroup()
+
+print(covariate_form_comparison_60,n = Inf)
+
+
+# 2.5.3 Retain the most parsimonious form ----
+# The linear form is retained when its AIC is within 2 units
+# of the minimum AIC. Otherwise, the quadratic form is retained.
+covariate_form_comparison_60 <-
+  covariate_form_comparison_60 %>%
+  group_by(
+    covariate
+  ) %>%
+  mutate(
     selected_form_parsimonious = case_when(
+      
       form == "linear" &
-        AIC <= AIC_min + 2 ~ TRUE,
+        delta_AIC <= 2 ~ TRUE,
       
       form == "quadratic" &
         !any(
           form == "linear" &
-            AIC <= AIC_min + 2
+            delta_AIC <= 2
         ) ~ TRUE,
       
       TRUE ~ FALSE
@@ -507,6 +561,17 @@ covariate_form_comparison_60 <- covariate_form_comparison_60 %>%
   ) %>%
   ungroup()
 
+
+selected_covariate_forms_60 <-
+  covariate_form_comparison_60 %>%
+  filter(
+    selected_form_parsimonious
+  ) %>%
+  arrange(
+    covariate
+  )
+
+print(selected_covariate_forms_60, n = Inf)
 
 
 # 2.6 Fit diel time as a cosinor model ----
@@ -532,9 +597,7 @@ model_diel_null_60 <- lme4::glmer(
   family = stats::binomial(
     link = "logit"
   ),
-  
   control = glmer_control,
-  
   nAGQ = 1)
 
 
@@ -559,7 +622,6 @@ model_diel_cosinor_60 <- lme4::glmer(
   nAGQ = 1
 )
 
-
 diel_model_comparison_60 <- stats::AIC(
   model_diel_null_60,
   model_diel_cosinor_60
@@ -579,15 +641,15 @@ print(diel_model_comparison_60)
 
 
 # 2.7 Land-cover categorical model ----
-if ("landcover_3" %in% names(transitions_60)) {
+if ("landcover_to" %in% names(transitions_60)) {
   
   landcover_data_60 <- transitions_60 %>%
     filter(
-      !is.na(landcover_3)
+      !is.na(landcover_to)
     ) %>%
     mutate(
-      landcover_3 = factor(
-        landcover_3,
+      landcover_to = factor(
+        landcover_to,
         levels = c(
           "rocky_terrain",
           "low_vegetation",
@@ -621,7 +683,7 @@ if ("landcover_3" %in% names(transitions_60)) {
   model_landcover_factor_60 <- lme4::glmer(
     next_terrestrial ~
       behavior_from *
-      landcover_3 +
+      landcover_to +
       (1 | individual_id),
     
     data = landcover_data_60,
@@ -660,9 +722,69 @@ if ("landcover_3" %in% names(transitions_60)) {
   
   message(
     paste0(
-      "landcover_3 has not yet been created. ",
+      "landcover_to has not yet been created. ",
       "Reclassify landcover_100m before fitting the categorical model."
     )
   )
 }
+
+# synthèse
+selected_variable_forms_60 <- selected_covariate_forms_60 %>%
+  select(
+    covariate,
+    form,
+    AIC,
+    delta_AIC,
+    converged,
+    singular
+  ) %>%
+  bind_rows(
+    tibble::tibble(
+      covariate = "diel_cycle",
+      form = "cosinor",
+      AIC = stats::AIC(model_diel_cosinor_60),
+      delta_AIC = 0,
+      converged = model_converged(
+        model_diel_cosinor_60
+      ),
+      singular = lme4::isSingular(
+        model_diel_cosinor_60,
+        tol = 1e-4
+      )
+    ),
+    
+    tibble::tibble(
+      covariate = "landcover_to",
+      form = "categorical",
+      AIC = stats::AIC(
+        model_landcover_factor_60
+      ),
+      delta_AIC = 0,
+      converged = model_converged(
+        model_landcover_factor_60
+      ),
+      singular = lme4::isSingular(
+        model_landcover_factor_60,
+        tol = 1e-4
+      )
+    )
+  )
+
+print(
+  selected_variable_forms_60,
+  n = Inf
+)
+
+
+
+
+
+#'------------------------------------------------------------------------------
+# Step 3 : correlation amongst covariates
+#' 
+#' **Steps:** 
+#' (1) assess correlation amongst covariates 
+#' (2) for highly correlated variables (|r| > 0.5), retain the variable
+#'     associated with the lowest AIC. 
+#' (3) remove covariate for which the biological interpretation is less clear
 
