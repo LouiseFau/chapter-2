@@ -27,14 +27,16 @@ library(EMbC)
 # Define out put directory
 output_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire"
 
-# Géoïde, digital elevation model and other ground based informations
-geo <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/geoide/us_nga_egm96_15.tif")
-dem <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/dem_25m_LZW.tif")
-human_footprint <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/settlements/Overture/human_footprint_index_building_pop_builtprop_100m.tif")
-ruggedness <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/ruggedness_TRI_25m_LZW.tif")
-slope <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/slope_25m_LZW.tif")
-dist_ridgeline <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/donnees/raster/topography/distance_to_ridge_line_complete_version.tif")
-landcover <- rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data_landuse/Data_CLC/CLC_Alps/CLC_longlat/CLC_longlat.tif")
+#' Géoïde, digital elevation model and other ground based informations
+#' All raster have the resolution (100x100m) and the crs of the human_footprint_index
+#' These changes were implemented in the script 'resolution_and_crs_change'
+geo <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/resolution_100m/geoide_100m.tif")
+dem <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/resolution_100m/dem_100m.tif")
+human_footprint <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/human_footprint_index_building_pop_builtprop_100m.tif")
+ruggedness <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/ruggedness_TRI_100m.tif")
+slope <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/resolution_100m/slope_100m.tif")
+dist_ridgeline <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/resolution_100m/distance_to_ridgeline_100m.tif")
+landcover <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/COUCHES QGIS/COUCHES QGIS/Topography/resolution_100m/landcover_100m.tif")
 
 # Emigration dates and golden eagle data
 emig_dates <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
@@ -106,21 +108,33 @@ dispersal_data <- lapply(rds_files_filtered, function(f) {
   
   
   # 1.1.2 Calculate height above ground ----
-  xy_ll <- as.matrix(df[, c("location.long", "location.lat")])
+  # Check that geoid and DEM have the same CRS
+  if (!terra::same.crs(geo, dem)) {
+    stop("The geoid and DEM rasters do not have the same CRS.")
+  }
   
-  N <- terra::extract(geo, xy_ll)[, 1]
-  
-  # Convert ellipsoid height to height above mean sea level
-  df$height_msl <- df$height.above.ellipsoid - N
-  
-  # Project GPS locations to the DEM coordinate system
+  # Create GPS points in their original longitude-latitude CRS
   pts <- terra::vect(
-    df[, c("location.long", "location.lat")],
+    df,
     geom = c("location.long", "location.lat"),
     crs = "EPSG:4326")
   
-  pts_dem <- terra::project(pts, terra::crs(dem))
-  df$dem_elevation <- terra::extract(dem, pts_dem)[, 2]
+  # Project GPS points once to the common raster CRS
+  pts_raster <- terra::project(pts, terra::crs(dem))
+  
+  # Extract geoid correction and DEM elevation
+  N <- terra::extract(
+    geo,
+    pts_raster,
+    ID = FALSE)[, 1]
+  
+  df$dem_elevation <- terra::extract(
+    dem,
+    pts_raster,
+    ID = FALSE)[, 1]
+  
+  # Convert ellipsoid height to height above mean sea level
+  df$height_msl <- df$height.above.ellipsoid - N
   
   # Calculate height above ground
   df$height_above_ground <- df$height_msl - df$dem_elevation
@@ -209,7 +223,8 @@ height_limits_before_filter <- dispersal_data %>%
       na.rm = TRUE))
 
 print(height_limits_before_filter)
-
+# height_q01 height_max
+# -103.9546   28130.74
 
 # Extract the q01 value as a numeric threshold
 height_q01 <- height_limits_before_filter$height_q01
@@ -285,11 +300,11 @@ cluster_summary_full <- dispersal_data %>%
   arrange(behavior_cluster)
 
 print(cluster_summary_full)
-# behavior_cluster speed_med height_med      n
-# 1      0.12         13.5 159906
-# 2        0.82       32.2  18534
-# 3       10.3        35.4  30962
-# 4        13         371.   16865
+#' behavior_cluster speed_med height_med      n
+#' 1                 0.12       15.3        161541
+#' 2                 0.84       34.4         16863
+#' 3                 10.3       41.6         32532
+#' 4                 13.2       402.         15333
 
 #' Cluster 2 is difficult to interpret. 
 
@@ -329,8 +344,6 @@ vertical_accuracy_max <- dispersal_data %>%
   ) %>%
   pull(threshold)
 
-# Add a 20% tolerance margin
-vertical_accuracy_max <- vertical_accuracy_max * 1.20
 print(vertical_accuracy_max)
 
 # Count observations before filtering
@@ -613,8 +626,8 @@ timing_summary <- bind_rows(
 print(timing_summary)
 #' we obtain 
 #' resolution_min n_individuals n_points n_bursts n_valid_transitions median_dt_next_min p05_dt_next_min p95_dt_next_min min_dt_next_min max_dt_next_min
-#' 20            62              76613    12914               76613                 20            15.0            20.3              15              25                   0.0833
-#' 60            66              40538     8031               40538                 60            59.4            60.5              50              70                   0.150 
+#'20                   62        86917    12566               86917                 20            15.0            20.3              15
+#'60                   66        48723     7865               48723                 60            59.4            60.5              50
 
 # inspect individual differences
 summarise_by_individual <- function(df) {
@@ -664,362 +677,77 @@ saveRDS(regular_60_sf, file.path("/Users/louisefaure/Library/CloudStorage/OneDri
 
 
 
+
+
+
+
 #'------------------------------------------------------------------------------
 # Step 4 : extract human footprint index and control covariates ----
 #'
 #'** Steps:**
-#' Steps:
-#' (1) evaluate horizontal accuracy and define the local extraction buffer;
+#' (1) split the 20-min and 60-min datasets by individual;
 #' (2) calculate continuous temporal covariates;
-#' (3) extract numerical control covariates within the local buffer;
-#' (4) calculate land-cover proportions within the local buffer;
-#' (5) extract HFI within local, 500 m and 1000 m buffers;
+#' (3) extract numerical control covariates below each location;
+#' (4) extract binary land-cover categories below each location;
+#' (5) extract HFI below each location and within 500 m and 1000 m buffers;
 #' (6) export the resulting datasets.
 
-GE_20_min_thinned <- ("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds")
-GE_60_min_thinned <- ("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds")
 
-# subset 
-# Load the 20-min dataset from the previous step
+
+
+GE_20_min_thinned <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds"
+GE_60_min_thinned <- "/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_60_min_thinned.rds"
+
 regular_20_sf <- readRDS(GE_20_min_thinned)
-
-# Check that the object was loaded correctly
-print(class(regular_20_sf))
-print(sf::st_crs(regular_20_sf))
-cat("Number of available points:", nrow(regular_20_sf), "\n")
-
-# Create a reproducible subset for testing
-set.seed(123)
-
-regular_20_test <- regular_20_sf %>%
-  slice_sample(n = min(1000, nrow(regular_20_sf)))
-
-# Add temporal covariates
-regular_20_test <- add_temporal_covariates(regular_20_test)
-
-# Test covariate extraction
-test_time <- system.time({
-  regular_20_test_covariates <- extract_covariates(
-    df_sf = regular_20_test,
-    control_rasters = control_rasters,
-    landcover_raster = landcover,
-    landcover_groups = landcover_groups,
-    hfi_raster = human_footprint,
-    local_buffer_m = accuracy_buffer_m,
-    hfi_buffers_m = c(500, 1000)
-  )
-})
-
-print(test_time)
+regular_60_sf <- readRDS(GE_60_min_thinned)
 
 
-# 4.1 Evaluate horizontal accuracy ----
-horizontal_accuracy_distribution <- dispersal_data %>%
-  summarise(
-    n_available = sum(!is.na(eobs.horizontal.accuracy.estimate)),
-    across(
-      eobs.horizontal.accuracy.estimate,
-      list(
-        q25 = ~ quantile(.x, 0.25, na.rm = TRUE),
-        median = ~ median(.x, na.rm = TRUE),
-        q75 = ~ quantile(.x, 0.75, na.rm = TRUE),
-        q90 = ~ quantile(.x, 0.90, na.rm = TRUE),
-        maximum = ~ max(.x, na.rm = TRUE)
-      ),
-      .names = "{.fn}"
-    )
-  )
+# 4.1 Calculate continuous temporal covariates ----
 
-print(horizontal_accuracy_distribution)
-# q90 is at 28.16, we rounded q90 to 30m to define the buffer of extraction of 
-# covariates values. 
-accuracy_buffer_m <- 30
-
-
-# 4.2 Calculate cos(Diel) and sin(Time) ----
-add_temporal_covariates <- function(df_sf) {
-  
-  df_sf %>%
-    mutate(
-      time_local = lubridate::with_tz(
-        timestamp,
-        tzone = tz_loc
-      ),
-      
-      decimal_hour =
-        lubridate::hour(time_local) +
-        lubridate::minute(time_local) / 60 +
-        lubridate::second(time_local) / 3600,
-      
-      time_angle =
-        2 * pi * decimal_hour / 24,
-      
-      cos_diel =
-        cos(time_angle),
-      
-      sin_time =
-        sin(time_angle))}
-
-# 4.3 Define numerical control rasters ----
-control_rasters <- list(
-  elevation = dem,
-  ruggedness = ruggedness,
-  slope = slope,
-  distance_to_ridgeline = dist_ridgeline)
-
-# 4.4 Grouped land-cover classes ----
-landcover_groups <- list(
-  artificial_surfaces = c(1),
-  forest = c(2, 3, 4),
-  low_vegetation = c(5, 6, 7),
-  rocky_surface = c(8, 9),
-  water_bodies_and_ice = c(10, 11, 253),
-  outside_area_and_no_data = c(254, 255))
-
-
-# 4.5 Generic raster extraction function ----
-extract_covariates <- function(
-    df_sf,
-    control_rasters,
-    landcover_raster,
-    landcover_groups,
-    hfi_raster,
-    local_buffer_m = 30,
-    hfi_buffers_m = c(500, 1000)
-) {
-  
-  # Check that coordinates are projected in metres
-  if (sf::st_crs(df_sf)$epsg != 3035) {stop("df_sf must be in EPSG:3035 before covariate extraction.")}
-  
-  pts_3035 <- terra::vect(df_sf)
-  local_buffer <- terra::buffer(pts_3035, width = local_buffer_m)
-  
-  control_same_crs <- vapply( control_rasters, function(x) terra::same.crs(pts_3035, x), logical(1) ) 
-  if (!all(control_same_crs)) { stop( "These control rasters do not use the GPS CRS: ", paste(names(control_same_crs)[!control_same_crs], collapse = ", ") ) } 
-  
-  # MODIFIED: check that HFI uses the same CRS as GPS points 
-  if (!terra::same.crs(pts_3035, hfi_raster)) { stop("The HFI raster does not use the same CRS as the GPS points.") }
-  
-  # 4.5.1 Extract numerical control covariates within the local buffer ----
-  for (variable_name in names(control_rasters)) {
-    
-    raster_i <- control_rasters[[variable_name]]
-    
-    # Project the local buffer to the raster CRS
-    buffer_i <- terra::project(
-      local_buffer,
-      terra::crs(raster_i)
-    )
-    
-    # Median is used to reduce sensitivity to extreme neighbouring cells
-    extracted_i <- terra::extract(
-      raster_i,
-      buffer_i,
-      fun = median,
-      na.rm = TRUE,
-      ID = FALSE
-    )[, 1]
-    
-    extracted_i[is.nan(extracted_i)] <- NA_real_
-    
-    df_sf[[paste0(
-      variable_name,
-      "_median_",
-      local_buffer_m,
-      "m"
-    )]] <- extracted_i
-  }
-  
-  
-  # 4.5.2 Calculate land-cover proportions within the local buffer ----
-  landcover_buffer <- terra::project( local_buffer, terra::crs(landcover_raster) )
-  
-  for (group_name in names(landcover_groups)) {
-    
-    group_codes <- landcover_groups[[group_name]]
-    # Binary raster:
-    # 1 = cell belongs to the selected group
-    # 0 = cell belongs to another land-cover group
-    group_binary <- landcover_raster %in% group_codes
-    
-    group_prop <- terra::extract(
-      group_binary,
-      landcover_buffer,
-      fun = mean,
-      na.rm = TRUE,
-      ID = FALSE
-    )[, 1]
-    
-    group_prop[is.nan(group_prop)] <- NA_real_
-    
-    df_sf[[paste0(
-      "landcover_",
-      group_name,
-      "_percent_",
-      local_buffer_m,
-      "m"
-    )]] <- 100 * group_prop
-  }
-  
-  # 4.5.3 Extract HFI within the local 30 m buffer ---- 
-  hfi_local <- terra::extract( hfi_raster, local_buffer, fun = mean, na.rm = TRUE, ID = FALSE )[, 1] 
-  hfi_local[is.nan(hfi_local)] <- NA_real_ 
-  df_sf[[paste0( "hfi_mean_", local_buffer_m, "m" )]] <- hfi_local
-  
-  # 4.5.4 Extract HFI within 500 m and 1000 m buffers ----
-  for (buffer_m in hfi_buffers_m) {
-    
-    hfi_buffer <- terra::buffer( pts_3035, width = buffer_m )
-    
-    hfi_values <- terra::extract(
-      hfi_raster,
-      hfi_buffer,
-      fun = mean,
-      na.rm = TRUE,
-      ID = FALSE
-    )[, 1]
-    
-    hfi_values[is.nan(hfi_values)] <- NA_real_
-    
-    df_sf[[paste0("hfi_mean_", buffer_m, "m")]] <- hfi_values
-  }
-  
-  
-  df_sf
-}
-
-
-# 4.6 Add temporal covariates ----
-regular_20_sf <- add_temporal_covariates(regular_20_sf)
-regular_60_sf <- add_temporal_covariates(regular_60_sf)
-
-
-# 4.7 Extract environmental covariates ----
-regular_20_covariates <- extract_covariates(
-  df_sf = regular_20_sf,
-  control_rasters = control_rasters,
-  landcover_raster = landcover,
-  landcover_groups = landcover_groups,
-  hfi_raster = human_footprint,
-  local_buffer_m = accuracy_buffer_m,
-  hfi_buffers_m = c(500, 1000))
-
-regular_60_covariates <- extract_covariates(
-  df_sf = regular_60_sf,
-  control_rasters = control_rasters,
-  landcover_raster = landcover,
-  landcover_groups = landcover_groups,
-  hfi_raster = human_footprint,
-  local_buffer_m = accuracy_buffer_m,
-  hfi_buffers_m = c(500, 1000)
-)
-
-
-# 4.8 Inspect extracted covariates ----
-covariate_names <- c(
-  paste0(
-    names(control_rasters),
-    "_median_",
-    accuracy_buffer_m,
-    "m"
-  ),
-  paste0(
-    c(
-      "forest_percent_",
-      "grassland_percent_",
-      "bare_rock_percent_"
+regular_20_sf <- regular_20_sf %>%
+  mutate(
+    # Convert UTC timestamp to local time
+    time_local = lubridate::with_tz(
+      timestamp,
+      tzone = tz_loc
     ),
-    accuracy_buffer_m,
-    "m"
-  ),
-  paste0(
-    "hfi_mean_",
-    c(accuracy_buffer_m, 500, 1000),
-    "m"
-  ),
-  "cos_diel",
-  "sin_time"
-)
-
-print(
-  regular_20_covariates %>%
-    sf::st_drop_geometry() %>%
-    summarise(
-      across(
-        all_of(covariate_names),
-        ~ sum(is.na(.x)),
-        .names = "n_missing_{.col}"
-      )
-    )
-)
-
-print(
-  regular_60_covariates %>%
-    sf::st_drop_geometry() %>%
-    summarise(
-      across(
-        all_of(covariate_names),
-        ~ sum(is.na(.x)),
-        .names = "n_missing_{.col}"
-      )
-    )
-)
-
-
-# 4.9 Export datasets ----
-
-saveRDS(
-  regular_20_covariates,
-  file.path(
-    output_dir,
-    "GE_20_min_thinned_covariates.rds"
+    
+    # Continuous local hour
+    decimal_hour =
+      lubridate::hour(time_local) +
+      lubridate::minute(time_local) / 60 +
+      lubridate::second(time_local) / 3600,
+    
+    # Convert local time to an angle between 0 and 2*pi
+    time_angle = 2 * pi * decimal_hour / 24,
+    
+    # Cyclic diel covariates
+    cos_diel = cos(time_angle),
+    sin_time = sin(time_angle)
   )
-)
 
-saveRDS(
-  regular_60_covariates,
-  file.path(
-    output_dir,
-    "GE_60_min_thinned_covariates.rds"
+
+regular_60_sf <- regular_60_sf %>%
+  mutate(
+    # Convert UTC timestamp to local time
+    time_local = lubridate::with_tz(
+      timestamp,
+      tzone = tz_loc
+    ),
+    
+    # Continuous local hour
+    decimal_hour =
+      lubridate::hour(time_local) +
+      lubridate::minute(time_local) / 60 +
+      lubridate::second(time_local) / 3600,
+    
+    # Convert local time to an angle between 0 and 2*pi
+    time_angle = 2 * pi * decimal_hour / 24,
+    
+    # Cyclic diel covariates
+    cos_diel = cos(time_angle),
+    sin_time = sin(time_angle)
   )
-)
 
 
 
-
-# previous function 
-# Function for covariate extraction
-hfi_crs <- terra::crs(human_footprint)
-
-extract_hfi <- function(df_sf,
-                        raster    = human_footprint,
-                        buffers_m = c(500, 1000)) {
-  
-  # Remove geometry, create a matrix for coordinates
-  df  <- as.data.frame(sf::st_drop_geometry(df_sf))
-  pts <- terra::vect(as.matrix(df[, c("x_3035", "y_3035")]),
-                     type = "points",
-                     crs  = "EPSG:3035")
-  
-  # Extraction of the HFI value below GPS points
-  pts_r        <- terra::project(pts, hfi_crs)         # alignement sur le CRS raster
-  df$hfi_point <- terra::extract(raster, pts_r, ID = FALSE)[, 1]
-  
-  # Buffer at 500m and 1000m, mean of the values
-  for (r in buffers_m) {
-    buf   <- terra::buffer(pts, width = r)             
-    buf_r <- terra::project(buf, hfi_crs)
-    val   <- terra::extract(raster, buf_r,
-                            fun = mean, na.rm = TRUE, ID = FALSE)[, 1]
-    df[[paste0("hfi_mean_", r, "m")]] <- val
-  }
-  
-  df
-}
-
-regular_20_hfi <- extract_hfi(regular_20_sf)
-regular_60_hfi <- extract_hfi(regular_60_sf)
-
-# save and export
-saveRDS(regular_20_hfi, file.path(output_dir, "GE_20_min_thinned_hfi.rds"))
-saveRDS(regular_60_hfi, file.path(output_dir, "GE_60_min_thinned_hfi.rds"))
