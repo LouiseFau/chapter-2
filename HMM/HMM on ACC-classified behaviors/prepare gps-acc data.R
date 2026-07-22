@@ -154,463 +154,1188 @@ saveRDS(
 #'     closest ACC burst as the behavior attached to that GPS point.
 
 
+#'------------------------------------------------------------------------------
+# STEP 2: assign ACC-classified behaviour to GPS locations ----
+#'------------------------------------------------------------------------------
 
-#' Step 2.0: load GPS files without burst segmentation ----
-gps_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/no_burst_GE/no_burst_GE"
+library(data.table)
+library(dplyr)
+library(sf)
 
-gps_files <- list.files(
-  path = gps_dir,
-  pattern = "\\.rds$",
-  full.names = TRUE,
-  recursive = TRUE,
-  ignore.case = TRUE
+
+#'------------------------------------------------------------------------------
+# 2.1 Load the two datasets ----
+#'------------------------------------------------------------------------------
+
+gps <- readRDS(
+  "/Users/louisefaure/Desktop/dossier sans titre/donnees aigles gps burst/gps_clean_by_individual.rds"
+)
+
+acc <- readRDS(
+  paste0(
+    "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/",
+    "THESE/CHAPITRE 2/git/chapter-2/HMM/",
+    "HMM on ACC-classified behaviors/donnees intermediaire (2)/",
+    "acc_classified_first_15_weeks_all_individuals_merged.rds"
+  )
 )
 
 
-read_one_gps_move <- function(f) {
-  
-  move_obj <- readRDS(f)
-  
-  # Extract GPS relocation table
-  x <- data.table::as.data.table(move_obj)
-  
-  # Extract individual metadata stored in the Move object's idData slot
-  id_data <- data.table::as.data.table(
-    methods::slot(move_obj, "idData")
-  )
-  
-  # Add individual identity to every GPS row
-  x[, individual.local.identifier := as.character(id_data$individual.local.identifier[1])]
-  x[, tag.local.identifier := as.integer(id_data$tag.local.identifier[1])]
-  x[, source_gps_file := basename(f)]
-  
-  # Ensure timestamp is POSIXct
-  x[, timestamp := as.POSIXct(timestamp, tz = "UTC")]
-  
-  x}
+# Maximum accepted temporal difference between an ACC record
+# and a GPS location.
 
-
-gps_by_file <- lapply(gps_files, read_one_gps_move)
-
-names(gps_by_file) <- make.unique(
-  vapply(
-    gps_by_file,
-    function(x) x$individual.local.identifier[1],
-    character(1)))
-
-
-
-#' Step 2.1: merge GPS files and retain the first 15 weeks of dispersal ----
-gps_raw_all <- data.table::rbindlist(
-  gps_by_file,
-  use.names = TRUE,
-  fill = TRUE)
-
-gps_raw_all[
-  emig_filtered,
-  dispersal_date := i.dispersal_date,
-  on = "individual.local.identifier"]
-
-gps_raw_all <- gps_raw_all[!is.na(dispersal_date)]
-
-gps_raw_all[
-  ,
-  age_days := as.numeric(
-    difftime(timestamp, dispersal_date, units = "days"))]
-
-gps_raw_all[, age_weeks := age_days / 7]
-
-gps_15w <- gps_raw_all[
-  age_days >= 0 &
-    age_days < 105 &
-    !is.na(location.long) &
-    !is.na(location.lat)]
-
-gps_15w[, timespan := data.table::as.IDate(timestamp)]
-
-# Keep only GPS individuals that also have ACC-classified behaviors
-gps_15w <- gps_15w[
-  individual.local.identifier %in% unique(acc_15w$individualID)]
-
-data.table::setorder(
-  gps_15w,
-  individual.local.identifier,
-  timestamp)
-
-# Remove exact duplicated GPS records.
-# This removes repeated records only when individual, timestamp and event.id are identical.
-gps_15w <- unique(
-  gps_15w,
-  by = c("individual.local.identifier", "timestamp", "event.id"))
-
-# Create one unique GPS row identifier after all GPS filtering
-gps_15w[, gps_row_id := .I]
-
-
-
-#' Step 2.2: prepare GPS points for nearest-neighbour temporal join ----
-gps_points <- gps_15w[
-  ,
-  .(
-    individual.local.identifier,
-    tag.local.identifier,
-    source_gps_file,
-    gps_row_id,
-    gps_event_id = event.id,
-    gps_timestamp = timestamp,
-    timespan,
-    location.long,
-    location.lat,
-    height.above.ellipsoid,
-    ground.speed,
-    heading,
-    dispersal_date,
-    age_days,
-    age_weeks)]
-
-gps_points[, join_time := gps_timestamp]
-
-data.table::setorder(
-  gps_points,
-  individual.local.identifier,
-  join_time)
-
-
-#' Step 2.3: prepare ACC-classified bursts ----
-acc_points <- acc_15w[
-  ,
-  .(
-    individual.local.identifier = individualID,
-    acc_event_id = event.id,
-    acc_burstID = burstID,
-    acc_timestamp = timestamp,
-    rf8fitted,
-    pro_rf8fitted,
-    odbaAvg,
-    rollanimaltrack,
-    pitchanimaltrack,
-    burstmeanx,
-    burstmeany,
-    burstmeanz )]
-
-acc_points <- acc_points[
-  !is.na(individual.local.identifier) &
-    !is.na(acc_timestamp) &
-    !is.na(rf8fitted)]
-
-acc_points[, join_time := acc_timestamp]
-
-data.table::setorder(
-  acc_points,
-  individual.local.identifier,
-  join_time)
-
-
-#' Step 2.4: assign each ACC burst to the nearest GPS location ----
 max_assignment_gap_min <- 60
 
+
+#'------------------------------------------------------------------------------
+# 2.2 Combine the list of GPS objects while preserving geometry ----
+#'------------------------------------------------------------------------------
+
+# The code also works if gps is accidentally a single sf or move2 object.
+
+if (
+  inherits(gps, "sf") ||
+  inherits(gps, "move2")
+) {
+  gps_list <- list(gps)
+} else {
+  gps_list <- gps
+}
+
+
+if (
+  length(gps_list) == 0L
+) {
+  stop("The GPS list is empty.")
+}
+
+
+# Check that all GPS objects use the same CRS.
+
+reference_crs <- sf::st_crs(
+  gps_list[[1]]
+)
+
+same_crs <- vapply(
+  gps_list,
+  function(x) {
+    isTRUE(
+      sf::st_crs(x) ==
+        reference_crs
+    )
+  },
+  logical(1)
+)
+
+if (
+  !all(same_crs)
+) {
+  stop(
+    paste0(
+      "The GPS objects do not all use the same CRS. ",
+      "Reproject them before combining the list."
+    )
+  )
+}
+
+
+# Create names for unnamed list elements.
+
+gps_list_names <- names(
+  gps_list
+)
+
+if (
+  is.null(gps_list_names)
+) {
+  gps_list_names <- rep(
+    "",
+    length(
+      gps_list
+    )
+  )
+}
+
+missing_list_names <-
+  is.na(gps_list_names) |
+  gps_list_names == ""
+
+gps_list_names[
+  missing_list_names
+] <- paste0(
+  "gps_object_",
+  which(
+    missing_list_names
+  )
+)
+
+
+# Convert every object to sf and retain the original list-element name.
+
+gps_sf_list <- lapply(
+  seq_along(
+    gps_list
+  ),
+  function(i) {
+    
+    x <- sf::st_as_sf(
+      gps_list[[i]]
+    )
+    
+    x$source_gps_object <-
+      gps_list_names[[i]]
+    
+    x
+  }
+)
+
+
+gps_sf <- dplyr::bind_rows(
+  gps_sf_list
+)
+
+gps_sf <- sf::st_as_sf(
+  gps_sf
+)
+
+
+#'------------------------------------------------------------------------------
+# 2.3 Harmonise GPS column names and timestamps ----
+#'------------------------------------------------------------------------------
+
+# Support both Movebank naming conventions:
+# individual_local_identifier and individual.local.identifier.
+
+if (
+  !"individual_local_identifier" %in%
+  names(gps_sf) &&
+  "individual.local.identifier" %in%
+  names(gps_sf)
+) {
+  gps_sf <- gps_sf %>%
+    dplyr::rename(
+      individual_local_identifier =
+        individual.local.identifier
+    )
+}
+
+
+if (
+  !"individual_local_identifier" %in%
+  names(gps_sf)
+) {
+  stop(
+    paste0(
+      "The GPS data do not contain ",
+      "'individual_local_identifier'."
+    )
+  )
+}
+
+
+if (
+  !"timestamp" %in%
+  names(gps_sf)
+) {
+  stop(
+    "The GPS data do not contain a timestamp column."
+  )
+}
+
+
+gps_sf <- gps_sf %>%
+  dplyr::mutate(
+    
+    individual_local_identifier =
+      trimws(
+        as.character(
+          individual_local_identifier
+        )
+      ),
+    
+    # This assumes that the timestamps represent UTC.
+    # Change tz if the original timestamps were recorded differently.
+    gps_timestamp =
+      as.POSIXct(
+        timestamp,
+        tz = "UTC"
+      ),
+    
+    # Stable identifier used to merge the behaviour back
+    # without disturbing the geometry.
+    gps_row_id =
+      dplyr::row_number()
+  )
+
+
+if (
+  anyNA(
+    gps_sf$gps_timestamp
+  )
+) {
+  warning(
+    "Some GPS timestamps could not be converted to POSIXct."
+  )
+}
+
+
+#'------------------------------------------------------------------------------
+# 2.4 Prepare the ACC-classified behaviour data ----
+#'------------------------------------------------------------------------------
+
+acc_dt <- data.table::as.data.table(
+  data.table::copy(
+    acc
+  )
+)
+
+
+required_acc_columns <- c(
+  "individualID",
+  "timestamp",
+  "rf8fitted"
+)
+
+missing_acc_columns <- setdiff(
+  required_acc_columns,
+  names(
+    acc_dt
+  )
+)
+
+if (
+  length(
+    missing_acc_columns
+  ) > 0L
+) {
+  stop(
+    paste0(
+      "The following required ACC columns are missing: ",
+      paste(
+        missing_acc_columns,
+        collapse = ", "
+      )
+    )
+  )
+}
+
+
+acc_dt[
+  ,
+  individualID :=
+    trimws(
+      as.character(
+        individualID
+      )
+    )
+]
+
+acc_dt[
+  ,
+  acc_timestamp :=
+    as.POSIXct(
+      timestamp,
+      tz = "UTC"
+    )
+]
+
+acc_dt[
+  ,
+  rf8fitted :=
+    as.character(
+      rf8fitted
+    )
+]
+
+acc_dt[
+  ,
+  acc_row_id :=
+    .I
+]
+
+
+# Keep the required variables and any optional ACC variables
+# that are present in the dataset.
+
+optional_acc_columns <- intersect(
+  c(
+    "event.id",
+    "burstID",
+    "pro_rf8fitted",
+    "odbaAvg",
+    "rollanimaltrack",
+    "pitchanimaltrack",
+    "burstmeanx",
+    "burstmeany",
+    "burstmeanz"
+  ),
+  names(
+    acc_dt
+  )
+)
+
+acc_columns_to_keep <- c(
+  "acc_row_id",
+  "individualID",
+  "acc_timestamp",
+  "rf8fitted",
+  optional_acc_columns
+)
+
+acc_points <- acc_dt[
+  ,
+  ..acc_columns_to_keep
+]
+
+
+# Rename the individual identifier to match the GPS data.
+
+data.table::setnames(
+  acc_points,
+  old =
+    "individualID",
+  new =
+    "individual_local_identifier"
+)
+
+
+# Rename optional identifying columns when available.
+
+if (
+  "event.id" %in%
+  names(acc_points)
+) {
+  data.table::setnames(
+    acc_points,
+    old =
+      "event.id",
+    new =
+      "acc_event_id"
+  )
+}
+
+if (
+  "burstID" %in%
+  names(acc_points)
+) {
+  data.table::setnames(
+    acc_points,
+    old =
+      "burstID",
+    new =
+      "acc_burstID"
+  )
+}
+
+
+# Remove ACC rows that cannot be used for matching.
+
+acc_points <- acc_points[
+  !is.na(
+    individual_local_identifier
+  ) &
+    individual_local_identifier != "" &
+    !is.na(
+      acc_timestamp
+    ) &
+    !is.na(
+      rf8fitted
+    )
+]
+
+
+# Create a numeric time variable for the rolling join.
+# Numeric Unix time avoids inconsistencies caused only by displayed time zones.
+
+acc_points[
+  ,
+  join_time :=
+    as.numeric(
+      acc_timestamp
+    )
+]
+
+
+#'------------------------------------------------------------------------------
+# 2.5 Compare individual names between datasets ----
+#'------------------------------------------------------------------------------
+
+gps_individuals <- sort(
+  unique(
+    gps_sf$
+      individual_local_identifier
+  )
+)
+
+acc_individuals <- sort(
+  unique(
+    acc_points$
+      individual_local_identifier
+  )
+)
+
+
+acc_individuals_without_gps <- setdiff(
+  acc_individuals,
+  gps_individuals
+)
+
+gps_individuals_without_acc <- setdiff(
+  gps_individuals,
+  acc_individuals
+)
+
+
+individual_name_diagnostics <- list(
+  
+  n_gps_individuals =
+    length(
+      gps_individuals
+    ),
+  
+  n_acc_individuals =
+    length(
+      acc_individuals
+    ),
+  
+  acc_individuals_without_gps =
+    acc_individuals_without_gps,
+  
+  gps_individuals_without_acc =
+    gps_individuals_without_acc
+)
+
+
+print(
+  individual_name_diagnostics
+)
+
+
+# According to your description, this object should contain:
+# "Droslöng17 (eobs 5704)"
+# "Viluoch17 (eobs 4570)"
+
+print(
+  acc_individuals_without_gps
+)
+
+
+#'------------------------------------------------------------------------------
+# 2.6 Prepare a non-spatial GPS table for the temporal join ----
+#'------------------------------------------------------------------------------
+
+gps_points <- data.table::data.table(
+  
+  gps_row_id =
+    gps_sf$gps_row_id,
+  
+  individual_local_identifier =
+    gps_sf$
+    individual_local_identifier,
+  
+  gps_timestamp =
+    gps_sf$gps_timestamp
+)
+
+
+gps_points[
+  ,
+  join_time :=
+    as.numeric(
+      gps_timestamp
+    )
+]
+
+
+gps_points <- gps_points[
+  !is.na(
+    individual_local_identifier
+  ) &
+    individual_local_identifier != "" &
+    !is.na(
+      gps_timestamp
+    )
+]
+
+
+data.table::setkey(
+  acc_points,
+  individual_local_identifier,
+  join_time
+)
+
 data.table::setkey(
   gps_points,
-  individual.local.identifier,
-  join_time)
+  individual_local_identifier,
+  join_time
+)
+
+
+#------------------------------------------------------------------------------
+# Assign to each GPS point the closest ACC behaviour in time
+#------------------------------------------------------------------------------
+
+max_assignment_gap_min <- 60
+
+
+# Ensure that timestamps are POSIXct and use the same time zone.
+
+gps_points[
+  ,
+  gps_timestamp :=
+    as.POSIXct(
+      gps_timestamp,
+      tz = "UTC"
+    )
+]
+
+acc_points[
+  ,
+  acc_timestamp :=
+    as.POSIXct(
+      acc_timestamp,
+      tz = "UTC"
+    )
+]
+
+
+# Use numeric timestamps for the rolling joins.
+
+gps_points[
+  ,
+  join_time :=
+    as.numeric(
+      gps_timestamp
+    )
+]
+
+acc_points[
+  ,
+  join_time :=
+    as.numeric(
+      acc_timestamp
+    )
+]
+
+
+# Each GPS point must have a unique identifier.
+
+if (
+  anyDuplicated(
+    gps_points$gps_row_id
+  ) > 0L
+) {
+  stop(
+    "gps_row_id is not unique in gps_points."
+  )
+}
+
 
 data.table::setkey(
   acc_points,
-  individual.local.identifier,
-  join_time)
+  individual_local_identifier,
+  join_time
+)
 
-# For each ACC burst, find the nearest GPS point from the same individual.
-# The resulting table has one row per ACC burst.
-acc_nearest_gps <- gps_points[
-  acc_points,
-  on = .(individual.local.identifier, join_time),
-  roll = "nearest"]
+data.table::setkey(
+  gps_points,
+  individual_local_identifier,
+  join_time
+)
 
-acc_nearest_gps[
+
+#------------------------------------------------------------------------------
+# 1. Closest ACC record occurring before the GPS timestamp
+#------------------------------------------------------------------------------
+
+acc_previous <- acc_points[
+  gps_points,
+  
+  on = .(
+    individual_local_identifier,
+    join_time
+  ),
+  
+  roll = Inf,
+  
+  # Prevent duplicate ACC timestamps from producing several rows.
+  mult = "last",
+  
+  .(
+    gps_row_id =
+      i.gps_row_id,
+    
+    individual_local_identifier =
+      i.individual_local_identifier,
+    
+    gps_timestamp =
+      i.gps_timestamp,
+    
+    acc_row_id,
+    
+    acc_timestamp,
+    
+    rf8fitted,
+    
+    pro_rf8fitted,
+    
+    acc_event_id,
+    
+    acc_burstID,
+    
+    odbaAvg,
+    
+    rollanimaltrack,
+    
+    pitchanimaltrack,
+    
+    burstmeanx,
+    
+    burstmeany,
+    
+    burstmeanz
+  )
+]
+
+
+acc_previous[
   ,
-  abs_time_diff_min := abs(
-    as.numeric(
-      difftime(acc_timestamp, gps_timestamp, units = "mins")))]
+  temporal_direction :=
+    "previous"
+]
 
-acc_nearest_gps[
+
+#------------------------------------------------------------------------------
+# 2. Closest ACC record occurring after the GPS timestamp
+#------------------------------------------------------------------------------
+
+acc_next <- acc_points[
+  gps_points,
+  
+  on = .(
+    individual_local_identifier,
+    join_time
+  ),
+  
+  roll = -Inf,
+  
+  # Prevent duplicate ACC timestamps from producing several rows.
+  mult = "first",
+  
+  .(
+    gps_row_id =
+      i.gps_row_id,
+    
+    individual_local_identifier =
+      i.individual_local_identifier,
+    
+    gps_timestamp =
+      i.gps_timestamp,
+    
+    acc_row_id,
+    
+    acc_timestamp,
+    
+    rf8fitted,
+    
+    pro_rf8fitted,
+    
+    acc_event_id,
+    
+    acc_burstID,
+    
+    odbaAvg,
+    
+    rollanimaltrack,
+    
+    pitchanimaltrack,
+    
+    burstmeanx,
+    
+    burstmeany,
+    
+    burstmeanz
+  )
+]
+
+
+acc_next[
   ,
-  gps_assigned_60min := !is.na(gps_row_id) &
-    abs_time_diff_min <= max_assignment_gap_min]
-
-acc_with_gps_60min <- acc_nearest_gps[
-  gps_assigned_60min == TRUE]
-
-acc_without_gps_60min <- acc_nearest_gps[
-  is.na(gps_assigned_60min) |
-    gps_assigned_60min == FALSE]
+  temporal_direction :=
+    "next"
+]
 
 
+#------------------------------------------------------------------------------
+# 3. Combine previous and next candidates
+#------------------------------------------------------------------------------
 
-#' Step 2.5: reduce to one behavior per GPS location ----
-#'
-#' Several ACC bursts can be assigned to the same GPS point.
-#' For a GPS-level trajectory, retain the ACC burst closest in time to the GPS fix.
-#' If two ACC bursts are equally close, retain the one with the highest RF probability.
-acc_with_gps_60min[
+gps_acc_candidates <- data.table::rbindlist(
+  list(
+    acc_previous,
+    acc_next
+  ),
+  
+  use.names =
+    TRUE,
+  
+  fill =
+    TRUE
+)
+
+
+# Calculate the absolute temporal distance.
+
+gps_acc_candidates[
   ,
-  pro_rf8fitted_order := data.table::fifelse(
-    is.na(pro_rf8fitted),
-    -Inf,
-    pro_rf8fitted)]
+  abs_time_diff_min :=
+    abs(
+      as.numeric(
+        difftime(
+          gps_timestamp,
+          acc_timestamp,
+          units = "mins"
+        )
+      )
+    )
+]
+
+
+# Missing ACC candidates must be ranked after valid candidates.
+
+gps_acc_candidates[
+  ,
+  temporal_distance_order :=
+    data.table::fifelse(
+      is.na(
+        abs_time_diff_min
+      ),
+      Inf,
+      abs_time_diff_min
+    )
+]
+
+
+# Use RF probability as a tie-breaking criterion.
+
+gps_acc_candidates[
+  ,
+  probability_order :=
+    data.table::fifelse(
+      is.na(
+        pro_rf8fitted
+      ),
+      -Inf,
+      pro_rf8fitted
+    )
+]
+
+
+# Deterministic final tie-breaking rule:
+# when distance and probability are equal, retain the previous ACC record.
+
+gps_acc_candidates[
+  ,
+  direction_order :=
+    data.table::fifelse(
+      temporal_direction ==
+        "previous",
+      1L,
+      2L
+    )
+]
+
 
 data.table::setorder(
-  acc_with_gps_60min,
+  gps_acc_candidates,
+  
   gps_row_id,
-  abs_time_diff_min,
-  -pro_rf8fitted_order)
+  
+  temporal_distance_order,
+  
+  -probability_order,
+  
+  direction_order
+)
 
-gps_behavior_from_acc <- acc_with_gps_60min[
+
+#------------------------------------------------------------------------------
+# 4. Retain exactly one nearest ACC record for each GPS point
+#------------------------------------------------------------------------------
+
+gps_nearest_acc <- gps_acc_candidates[
   ,
-  .SD[1],
-  by = gps_row_id]
+  .SD[1L],
+  by =
+    gps_row_id
+]
 
-gps_behavior_from_acc <- gps_behavior_from_acc[
+
+# The result must now contain exactly one row per GPS point.
+
+stopifnot(
+  nrow(
+    gps_nearest_acc
+  ) ==
+    nrow(
+      gps_points
+    )
+)
+
+stopifnot(
+  anyDuplicated(
+    gps_nearest_acc$gps_row_id
+  ) == 0L
+)
+
+
+#------------------------------------------------------------------------------
+# Step 2.5: Apply the temporal assignment rule ----
+#------------------------------------------------------------------------------
+# Rule:
+# For each GPS point:
+# - retain the closest ACC behaviour from the same individual
+# - keep the assignment only if the temporal distance is <= 60 min
+# - otherwise leave behaviour as NA
+#------------------------------------------------------------------------------
+
+
+max_assignment_gap_min <- 60
+
+
+# Identify valid behaviour assignments
+
+gps_nearest_acc[
   ,
-  .(
-    gps_row_id,
-    rf8fitted,
-    pro_rf8fitted,
-    acc_event_id,
-    acc_burstID,
-    acc_timestamp,
-    abs_time_diff_min,
-    odbaAvg,
-    rollanimaltrack,
-    pitchanimaltrack,
-    burstmeanx,
-    burstmeany,
-    burstmeanz)]
+  behavior_assigned :=
+    !is.na(acc_timestamp) &
+    !is.na(rf8fitted) &
+    !is.na(abs_time_diff_min) &
+    abs_time_diff_min <= max_assignment_gap_min
+]
 
 
-#' Step 2.7: merge assigned behavior back to GPS locations ----
-gps_beh_15w <- merge(
-  gps_points[
+# Record how the behaviour was assigned
+
+gps_nearest_acc[
+  ,
+  behavior_assignment_method :=
+    data.table::fifelse(
+      
+      behavior_assigned,
+      
+      paste0(
+        "nearest_ACC_within_",
+        max_assignment_gap_min,
+        "_min"
+      ),
+      
+      "no_ACC_within_maximum_gap"
+    )
+]
+
+
+# Remove behaviour labels that are outside the accepted temporal window.
+# Keep the temporal information for diagnostics.
+
+gps_nearest_acc[
+  behavior_assigned == FALSE,
+  `:=`(
+    
+    rf8fitted =
+      NA_character_,
+    
+    pro_rf8fitted =
+      NA_real_
+  )
+]
+
+
+# Order final GPS-level dataset
+
+data.table::setorder(
+  gps_nearest_acc,
+  individual_local_identifier,
+  gps_timestamp
+)
+
+
+#------------------------------------------------------------------------------
+# Step 2.6: Diagnostic of behaviour assignment ----
+#------------------------------------------------------------------------------
+
+gps_behavior_assignment_overall <-
+  
+  gps_nearest_acc[
     ,
     .(
-      individual.local.identifier,
-      tag.local.identifier,
-      source_gps_file,
+      
+      n_gps =
+        .N,
+      
+      n_gps_with_behavior =
+        sum(
+          !is.na(rf8fitted)
+        ),
+      
+      n_gps_without_behavior =
+        sum(
+          is.na(rf8fitted)
+        ),
+      
+      prop_gps_with_behavior =
+        mean(
+          !is.na(rf8fitted)
+        ),
+      
+      median_abs_time_diff_min =
+        median(
+          abs_time_diff_min,
+          na.rm = TRUE
+        ),
+      
+      maximum_abs_time_diff_min =
+        max(
+          abs_time_diff_min,
+          na.rm = TRUE
+        )
+    )
+  ]
+
+
+print(
+  gps_behavior_assignment_overall
+)
+
+
+
+#------------------------------------------------------------------------------
+# Step 2.7: Create the final GPS dataset with behaviour + geometry ----
+#------------------------------------------------------------------------------
+
+# Keep only the variables that must be transferred back to GPS.
+
+gps_behavior_assignment <-
+  
+  gps_nearest_acc[
+    ,
+    .(
+      
       gps_row_id,
-      gps_event_id,
-      gps_timestamp,
-      timespan,
-      location.long,
-      location.lat,
-      height.above.ellipsoid,
-      ground.speed,
-      heading,
-      dispersal_date,
-      age_days,
-      age_weeks)
-  ],
-  gps_behavior_from_acc,
-  by = "gps_row_id",
-  all.x = TRUE)
+      
+      rf8fitted,
+      
+      pro_rf8fitted,
+      
+      acc_row_id,
+      
+      acc_timestamp,
+      
+      abs_time_diff_min,
+      
+      behavior_assigned,
+      
+      behavior_assignment_method
+    )
+  ]
+
+
+# Remove possible old behaviour columns before joining.
+# This avoids creating rf8fitted.x / rf8fitted.y.
+
+gps_with_behavior <-
+  
+  gps_sf %>%
+  
+  dplyr::select(
+    
+    -dplyr::any_of(
+      c(
+        "rf8fitted",
+        "pro_rf8fitted",
+        "behavior_assigned",
+        "acc_timestamp",
+        "abs_time_diff_min",
+        "behavior_assignment_method"
+      )
+    )
+  ) %>%
+  
+  dplyr::left_join(
+    
+    gps_behavior_assignment,
+    
+    by =
+      "gps_row_id"
+  )
+
+
+
+# Verify that the spatial dataset contains the expected number
+# of assigned behaviours.
+
+print(
+  gps_with_behavior %>%
+    sf::st_drop_geometry() %>%
+    dplyr::summarise(
+      
+      n_gps =
+        dplyr::n(),
+      
+      n_with_behavior =
+        sum(
+          !is.na(rf8fitted)
+        ),
+      
+      n_without_behavior =
+        sum(
+          is.na(rf8fitted)
+        ),
+      
+      proportion_with_behavior =
+        mean(
+          !is.na(rf8fitted)
+        )
+    )
+)
+
+
+
+#------------------------------------------------------------------------------
+# Step 2.8: Create one spatial object per individual ----
+#------------------------------------------------------------------------------
+
+row_indices_by_individual <-
+  
+  split(
+    
+    seq_len(
+      nrow(
+        gps_with_behavior
+      )
+    ),
+    
+    gps_with_behavior$
+      individual_local_identifier
+  )
+
+
+gps_behavior_by_individual <-
+  
+  lapply(
+    
+    row_indices_by_individual,
+    
+    function(row_indices){
+      
+      gps_with_behavior[
+        row_indices,
+      ]
+    }
+  )
+
+
+print(
+  length(
+    gps_behavior_by_individual
+  )
+)
+
+
+
+#------------------------------------------------------------------------------
+# Step 2.9: Prepare dataset for behaviour reclassification ----
+#------------------------------------------------------------------------------
+
+gps_beh_15w <-
+  
+  gps_with_behavior %>%
+  
+  sf::st_drop_geometry() %>%
+  
+  dplyr::rename(
+    
+    individual.local.identifier =
+      individual_local_identifier
+  )
+
+
+data.table::setDT(
+  gps_beh_15w
+)
+
+
+# Remove GPS points without assigned behaviour.
+# They cannot enter a Markov chain because their state is unknown.
+
+gps_beh_15w <-
+  
+  gps_beh_15w[
+    !is.na(rf8fitted)
+  ]
+
+
+# Harmonise data types for Step 3
 
 gps_beh_15w[
   ,
-  behavior_assigned := !is.na(rf8fitted)]
+  individual.local.identifier :=
+    as.character(
+      individual.local.identifier
+    )
+]
+
+
+gps_beh_15w[
+  ,
+  gps_timestamp :=
+    as.POSIXct(
+      gps_timestamp,
+      tz = "UTC"
+    )
+]
+
+
+gps_beh_15w[
+  ,
+  rf8fitted :=
+    as.character(
+      rf8fitted
+    )
+]
+
 
 data.table::setorder(
   gps_beh_15w,
   individual.local.identifier,
-  gps_timestamp)
+  gps_timestamp
+)
 
 
-#' Step 2.8: individual leval diagnostics ----
-gps_behavior_assignment_summary <- gps_beh_15w[,.(
-    n_gps = .N,
-    n_gps_with_behavior = sum(behavior_assigned, na.rm = TRUE),
-    n_gps_without_behavior = sum(!behavior_assigned, na.rm = TRUE),
-    n_rf8fitted_NA = sum(is.na(rf8fitted)),
-    prop_gps_with_behavior = mean(behavior_assigned, na.rm = TRUE)
-  ),
-  by = individual.local.identifier
-][
-  order(individual.local.identifier)
-]
 
-gps_behavior_assignment_summary 
-# at the end of this stage where each ACC burst received a closed location points,
-# numerous individuals have still NA, e.i., location points without behavior 
-# assigned. 
+# Diagnostic before entering Step 3
 
+print(
+  gps_beh_15w[
+    ,
+    .(
+      n_rows =
+        .N,
+      
+      n_individuals =
+        uniqueN(
+          individual.local.identifier
+        ),
+      
+      n_behaviour_NA =
+        sum(
+          is.na(rf8fitted)
+        )
+    )
+  ]
+)
+    
 
-#' Step 2.9: second assignment of behaviors to GPS points ----
-#' We use ACC-burst data that has not been retained for any other location, and 
-#' are separated at least from 60 minutes from a non classified gps location point.
-max_secondary_assignment_gap_min <- 60
-
-data.table::setDT(gps_beh_15w)
-data.table::setDT(acc_points)
-data.table::setDT(gps_behavior_from_acc)
-
-gps_beh_15w[
-  ,
-  behavior_assignment_method := data.table::fifelse(
-    behavior_assigned == TRUE,
-    "primary_ACC_to_nearest_GPS",
-    "unassigned_after_primary")]
-
-
-#' Step 2.9.1: identify ACC bursts already retained in primary assignment ----
-primary_used_acc <- unique(
-  gps_behavior_from_acc[
-    !is.na(acc_event_id),
-    .(acc_event_id,
-      acc_burstID,
-      acc_timestamp)])
-
-acc_candidates_secondary <- acc_points[,.(
-    individual.local.identifier,
-    secondary_acc_event_id = acc_event_id,
-    secondary_acc_burstID = acc_burstID,
-    secondary_acc_timestamp = acc_timestamp,
-    secondary_rf8fitted = rf8fitted,
-    secondary_pro_rf8fitted = pro_rf8fitted,
-    secondary_odbaAvg = odbaAvg,
-    secondary_rollanimaltrack = rollanimaltrack,
-    secondary_pitchanimaltrack = pitchanimaltrack,
-    secondary_burstmeanx = burstmeanx,
-    secondary_burstmeany = burstmeany,
-    secondary_burstmeanz = burstmeanz)]
-
-acc_candidates_secondary[,join_time := secondary_acc_timestamp]
-
-primary_used_acc_for_join <- primary_used_acc[,.(
-    secondary_acc_event_id = acc_event_id,
-    secondary_acc_burstID = acc_burstID,
-    secondary_acc_timestamp = acc_timestamp)]
-
-acc_candidates_secondary[
-  primary_used_acc_for_join,
-  already_used_primary := TRUE,
-  on = c(
-    "secondary_acc_event_id",
-    "secondary_acc_burstID",
-    "secondary_acc_timestamp")]
-
-acc_candidates_secondary[
-  is.na(already_used_primary),
-  already_used_primary := FALSE]
-
-# Keep only ACC bursts not already retained in the primary GPS-level dataset
-acc_candidates_secondary_unused <- acc_candidates_secondary[
-  already_used_primary == FALSE]
-
-
-#' Step 2.9.2: prepare GPS points still missing behavior ----
-gps_missing_behavior <- gps_beh_15w[
-  behavior_assigned == FALSE,
-  .(
-    individual.local.identifier,
-    gps_row_id,
-    gps_timestamp)]
-
-gps_missing_behavior[,
-  join_time := gps_timestamp]
-
-
-#' Step 2.9.3: for each missing GPS point, find nearest unused ACC burst ----
-data.table::setkey(
-  acc_candidates_secondary_unused,
-  individual.local.identifier,
-  join_time)
-
-data.table::setkey(
-  gps_missing_behavior,
-  individual.local.identifier,
-  join_time)
-
-secondary_nearest_acc <- acc_candidates_secondary_unused[
-  gps_missing_behavior,
-  on = .(individual.local.identifier, join_time),
-  roll = "nearest"]
-
-secondary_nearest_acc[,
-  secondary_abs_time_diff_min := abs(
-    as.numeric(
-      difftime(
-        secondary_acc_timestamp,
-        gps_timestamp,
-        units = "mins")))]
-
-
-#' Step 2.9.4: keep only secondary assignments within 60 min ----
-secondary_assignments_60min <- secondary_nearest_acc[
-  !is.na(secondary_acc_timestamp) &
-    secondary_abs_time_diff_min <= max_secondary_assignment_gap_min]
-
-# One unused ACC burst should not be assigned to several GPS points.
-# If the same ACC burst is closest to several missing GPS points, retain the
-# closest GPS point only.
-secondary_assignments_60min[,
-  secondary_pro_rf8fitted_order := data.table::fifelse(
-    is.na(secondary_pro_rf8fitted),
-    -Inf,
-    secondary_pro_rf8fitted)]
-
-data.table::setorder(
-  secondary_assignments_60min,
-  secondary_acc_event_id,
-  secondary_abs_time_diff_min,
-  -secondary_pro_rf8fitted_order)
-
-secondary_assignments_60min <- secondary_assignments_60min[,
-  .SD[1],
-  by = secondary_acc_event_id]
-
-
-#' Step 2.9.5: merge secondary assignments back to GPS-level dataset ----
-gps_beh_15w[
-  secondary_assignments_60min,
-  on = "gps_row_id",
-  `:=`(
-    rf8fitted = i.secondary_rf8fitted,
-    pro_rf8fitted = i.secondary_pro_rf8fitted,
-    acc_event_id = i.secondary_acc_event_id,
-    acc_burstID = i.secondary_acc_burstID,
-    acc_timestamp = i.secondary_acc_timestamp,
-    abs_time_diff_min = i.secondary_abs_time_diff_min,
-    odbaAvg = i.secondary_odbaAvg,
-    rollanimaltrack = i.secondary_rollanimaltrack,
-    pitchanimaltrack = i.secondary_pitchanimaltrack,
-    burstmeanx = i.secondary_burstmeanx,
-    burstmeany = i.secondary_burstmeany,
-    burstmeanz = i.secondary_burstmeanz,
-    behavior_assigned = TRUE,
-    behavior_assignment_method = "secondary_GPS_to_nearest_unused_ACC_within_60min")]
-
-
-#' Step 2.9.6: diagnostics after secondary assignment ----
-behavior_assignment_method_summary <- gps_beh_15w[,
-  .N,
-  by = behavior_assignment_method][
-  order(-N)]
-
-print(behavior_assignment_method_summary)
-
-gps_behavior_assignment_summary_after_secondary <- gps_beh_15w[,.(
-    n_gps = .N,
-    n_gps_with_behavior = sum(behavior_assigned),
-    n_gps_without_behavior = sum(!behavior_assigned),
-    prop_gps_with_behavior = mean(behavior_assigned),
-    prop_gps_without_behavior = mean(!behavior_assigned),
-    median_abs_time_diff_min = median(abs_time_diff_min, na.rm = TRUE)
-  ),
-  by = individual.local.identifier
-][
-  order(-prop_gps_without_behavior)]
-
-print(gps_behavior_assignment_summary_after_secondary)
-#' The NAs that remain are mostly associated to few individuals, e.i., Mals2_20
-#' and Krn20 that have less than 10% of their GPS location associated with a 
-#' behavior. 
 
 
 #' -----------------------------------------------------------------------------
@@ -1009,7 +1734,7 @@ saveRDS(
   gps_beh_15w_markov_ready,
   file.path(
     output_dir,
-    "gps_behavior_first_15_weeks_reclassified_markov_ready.rds"
+    "acc-joint-gps-15weeks-raw.rds"
   ),
   compress = "gzip")
 
@@ -1025,344 +1750,556 @@ saveRDS(
 #' (3) create one intermediate-resolution dataset at 60 min;
 #' (4) split tracks into bursts
 
+gps_beh_15w_markov_ready <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/acc-joint-gps-15weeks-raw.rds")
 
-# 4.1 Inspect raw GPS data ----
-# Create move2 object from dispersal_data
-step3_input <- gps_beh_15w_markov_ready[behavior_assigned == TRUE]
 
-locs <- step3_input %>%
-  mutate(
-    individual.id = as.character(individual.local.identifier),
-    timestamp = as.POSIXct(gps_timestamp, tz = "UTC"),
-    lon = location.long,
-    lat = location.lat
-  ) %>%
-  filter(
-    !is.na(individual.id),
-    !is.na(timestamp),
-    !is.na(lon),
+library(data.table)
+library(dplyr)
+library(sf)
+
+
+# 4.1 Prepare the non-spatial input table ----
+step4_input <- data.table::as.data.table(
+  data.table::copy(
+    gps_beh_15w_markov_ready
+  )
+)
+
+step4_input <- step4_input[
+  behavior_assigned %in% TRUE &
+    !is.na(behavior_reclassified) &
+    !is.na(individual.local.identifier) &
+    !is.na(gps_timestamp) &
+    !is.na(lon) &
     !is.na(lat)
-  ) %>%
-  arrange(individual.id, timestamp) %>%
-  move2::mt_as_move2(
-    coords = c("lon", "lat"),
-    time_column = "timestamp",
-    track_id_column = "individual.id",
-    crs = 4326,
-    remove = FALSE)
-
-# Remove duplicate records with same individual and timestamp
-locs <- locs %>%
-  move2::mt_filter_unique(criterion = "first") %>%
-  arrange(individual.id, timestamp)
-
-# Project to EPSG:3035 for metric distances
-locs_3035 <- locs %>%
-  sf::st_transform(3035)
-
-xy_3035 <- sf::st_coordinates(locs_3035)
-
-locs_tbl <- locs_3035 %>%
-  mutate(
-    x_3035 = xy_3035[, 1],
-    y_3035 = xy_3035[, 2]
-  ) %>%
-  sf::st_drop_geometry() %>%
-  arrange(individual.id, timestamp)
+]
 
 
-# time lags
-time_lags <- locs_tbl %>%
-  group_by(individual.id) %>%
-  arrange(timestamp, .by_group = TRUE) %>%
-  mutate(
-    dt_min = as.numeric(difftime(timestamp, lag(timestamp), units = "mins"))
-  ) %>%
-  ungroup() %>%
-  filter(!is.na(dt_min), dt_min > 0)
-
-quantile(
-  time_lags$dt_min,
-  probs = c(0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99),
-  na.rm = TRUE)
-
-#' We found 
-#'  1%        5%       10%       25%       50%       75%       90%       95%       99% 
-#'  0.30000   4.95000 5.00000  14.85000  19.68332  20.05000  58.85000  60.20000 920.05000 
-#' We choose a fine scale resolution of 20 minutes because 50% of the data are temporally
-#' separated of 19.68 minutes and 60 minutes because 95% quantiles are around 60 minutes.
-
-
-#' Step 4.2 Thin GPS data at 20-min and 60-min intervals ----
-high_res_min <- 20
-intermediate_res_min <- 60
-
-high_res_tolerance_min <- 5
-intermediate_tolerance_min <- 10
-
-min_points_per_burst <- 3
-
-format_interval_name <- function(interval_min) {
-  gsub("\\.", "p", paste0(interval_min, "min"))}
-
-
-#' Thin GPS data
-thin_move2_interval <- function(locs,
-                                interval_unit,
-                                resolution_min,
-                                resolution_label) {
-  
-  locs_thin <- locs %>%
-    dplyr::arrange(individual.id, timestamp) %>%
-    move2::mt_filter_per_interval(
-      unit = interval_unit,
-      criterion = "first"
+step4_input[
+  ,
+  individual.id :=
+    as.character(
+      individual.local.identifier
     )
-  
-  xy <- sf::st_coordinates(locs_thin)
-  
-  locs_thin_tbl <- locs_thin %>%
-    dplyr::mutate(
-      individual.id = as.character(individual.id),
-      individual.local.identifier = as.character(individual.id),
-      timestamp = as.POSIXct(timestamp, tz = "UTC"),
-      x_3035 = as.numeric(xy[, 1]),
-      y_3035 = as.numeric(xy[, 2]),
-      resolution_min = resolution_min,
-      resolution_class = resolution_label
-    ) %>%
-    sf::st_drop_geometry() %>%
-    as.data.frame() %>%
-    dplyr::arrange(individual.id, timestamp)
-  
-  locs_thin_tbl
-}
+]
+
+step4_input[
+  ,
+  timestamp :=
+    as.POSIXct(
+      gps_timestamp,
+      tz = "UTC"
+    )
+]
+
+step4_input[
+  ,
+  lon :=
+    as.numeric(
+      lon
+    )
+]
+
+step4_input[
+  ,
+  lat :=
+    as.numeric(
+      lat
+    )
+]
 
 
-#' Step 4.3 Split retained tracks into regular bursts ----
-split_into_regular_bursts <- function(df,
-                                      interval_min,
-                                      tolerance_min,
-                                      min_points_per_burst = 3) {
-  
-  df_burst <- df %>%
-    dplyr::arrange(individual.id, timestamp) %>%
-    dplyr::group_by(individual.id) %>%
-    dplyr::mutate(
-      dt_prev_min = as.numeric(
-        difftime(timestamp, dplyr::lag(timestamp), units = "mins")
-      ),
-      
-      new_burst = is.na(dt_prev_min) |
-        abs(dt_prev_min - interval_min) > tolerance_min,
-      
-      burst_n = cumsum(new_burst),
-      
-      burst_id = paste(
-        individual.id,
-        format_interval_name(interval_min),
-        sprintf("%04d", burst_n),
-        sep = "_"
+# Remove exact duplicate individual-timestamp combinations.
+data.table::setorder(
+  step4_input,
+  individual.id,
+  timestamp
+)
+
+step4_input <- unique(
+  step4_input,
+  by = c(
+    "individual.id",
+    "timestamp"
+  )
+)
+
+
+# Check the number of rows before thinning.
+cat(
+  "Rows before 60-min thinning:",
+  nrow(step4_input),
+  "\n"
+)
+
+
+# 4.2 Select one GPS point per 60-min interval ----
+resolution_min_60 <- 60
+tolerance_min_60 <- 10
+min_points_per_burst <- 3L
+
+
+# Unix time expressed in seconds.
+
+step4_input[
+  ,
+  timestamp_numeric :=
+    as.numeric(
+      timestamp
+    )
+]
+
+
+# Create fixed one-hour calendar bins in UTC.
+#
+# floor(timestamp / 3600) assigns all points between, for example,
+# 10:00:00 and 10:59:59 to the same temporal interval.
+
+step4_input[
+  ,
+  interval_60_id :=
+    floor(
+      timestamp_numeric /
+        (resolution_min_60 * 60)
+    )
+]
+
+
+# Retain the first GPS observation in every one-hour interval
+# for each individual.
+
+thin_60_dt <- step4_input[
+  order(
+    individual.id,
+    timestamp
+  ),
+  .SD[1L],
+  by = .(
+    individual.id,
+    interval_60_id
+  )
+]
+
+
+data.table::setorder(
+  thin_60_dt,
+  individual.id,
+  timestamp
+)
+
+
+thin_60_dt[
+  ,
+  `:=`(
+    individual.local.identifier =
+      individual.id,
+    
+    resolution_min =
+      resolution_min_60,
+    
+    resolution_class =
+      "60min_intermediate_resolution"
+  )
+]
+
+
+cat(
+  "Rows after 60-min thinning:",
+  nrow(thin_60_dt),
+  "\n"
+)
+
+cat(
+  "Proportion retained:",
+  nrow(thin_60_dt) /
+    nrow(step4_input),
+  "\n"
+)
+
+
+#'------------------------------------------------------------------------------
+# 4.3 Split the thinned data into regular temporal bursts ----
+#'------------------------------------------------------------------------------
+
+thin_60_dt[
+  ,
+  dt_prev_min :=
+    as.numeric(
+      difftime(
+        timestamp,
+        data.table::shift(
+          timestamp
+        ),
+        units = "mins"
       )
-    ) %>%
-    dplyr::ungroup()
-  
-  df_burst <- df_burst %>%
-    dplyr::group_by(individual.id, burst_id) %>%
-    dplyr::mutate(
-      n_points_burst = dplyr::n()
-    ) %>%
-    dplyr::ungroup() %>%
-    dplyr::filter(n_points_burst >= min_points_per_burst)
-  
-  df_burst <- df_burst %>%
-    dplyr::arrange(individual.id, burst_id, timestamp) %>%
-    dplyr::group_by(individual.id, burst_id) %>%
-    dplyr::mutate(
-      row_in_burst = dplyr::row_number(),
-      
-      dt_prev_burst_min = as.numeric(
-        difftime(timestamp, dplyr::lag(timestamp), units = "mins")
-      ),
-      
-      dt_next_burst_min = as.numeric(
-        difftime(dplyr::lead(timestamp), timestamp, units = "mins")
-      ),
-      
-      has_next_regular = !is.na(dt_next_burst_min) &
-        abs(dt_next_burst_min - interval_min) <= tolerance_min,
-      
-      lag_deviation_next_min = dt_next_burst_min - interval_min
-    ) %>%
-    dplyr::ungroup()
-  
-  df_burst
-}
-
-
-#' Step 4.4 Create 20-min and 60-min datasets ----
-thin_20_tbl <- thin_move2_interval(
-  locs = locs_3035,
-  interval_unit = "20 minutes",
-  resolution_min = high_res_min,
-  resolution_label = "20min_high_resolution")
-
-thin_60_tbl <- thin_move2_interval(
-  locs = locs_3035,
-  interval_unit = "1 hour",
-  resolution_min = intermediate_res_min,
-  resolution_label = "60min_intermediate_resolution")
-
-regular_20_tbl <- split_into_regular_bursts(
-  df = thin_20_tbl,
-  interval_min = high_res_min,
-  tolerance_min = high_res_tolerance_min,
-  min_points_per_burst = min_points_per_burst)
-
-regular_60_tbl <- split_into_regular_bursts(
-  df = thin_60_tbl,
-  interval_min = intermediate_res_min,
-  tolerance_min = intermediate_tolerance_min,
-  min_points_per_burst = min_points_per_burst)
-
-
-#' Step 4.5a Control the filtered datasets ----
-check_timing <- function(df) {
-  
-  df %>%
-    dplyr::summarise(
-      resolution_min = dplyr::first(resolution_min),
-      n_individuals = dplyr::n_distinct(individual.local.identifier),
-      n_points_retained = dplyr::n(),
-      n_bursts = dplyr::n_distinct(burst_id),
-      
-      n_valid_transitions = sum(has_next_regular, na.rm = TRUE),
-      n_terminal_points = sum(!has_next_regular | is.na(has_next_regular)),
-      
-      expected_valid_transitions = n_points_retained - n_bursts)
-}
-
-timing_20 <- check_timing(regular_20_tbl)
-timing_60 <- check_timing(regular_60_tbl)
-
-timing_summary <- dplyr::bind_rows(
-  timing_20 %>% dplyr::mutate(dataset = "20min_high_resolution"),
-  timing_60 %>% dplyr::mutate(dataset = "60min_intermediate_resolution"))
-
-print(timing_summary)
-
-
-#' Step 4.5b Inspect individual differences ----
-summarise_by_individual <- function(df) {
-  
-  df %>%
-    dplyr::group_by(resolution_class, individual.local.identifier) %>%
-    dplyr::summarise(
-      n_points_retained = dplyr::n(),
-      n_bursts = dplyr::n_distinct(burst_id),
-      n_valid_transitions = sum(has_next_regular, na.rm = TRUE),
-      median_points_per_burst = median(n_points_burst, na.rm = TRUE),
-      max_points_per_burst = max(n_points_burst, na.rm = TRUE),
-      .groups = "drop"
-    )
-}
-
-low_data_individuals <- summary_by_id %>%
-  dplyr::filter(n_valid_transitions < 200) %>%
-  dplyr::arrange(resolution_class, n_valid_transitions)
-
-print(low_data_individuals)
-
-
-#' Step 3.6 Export datasets ----
-regular_20_tbl <- regular_20_tbl %>%
-  dplyr::mutate(
-    x_3035 = as.numeric(x_3035),
-    y_3035 = as.numeric(y_3035)
-  ) %>%
-  dplyr::filter(
-    !is.na(x_3035),
-    !is.na(y_3035),
-    is.finite(x_3035),
-    is.finite(y_3035)
-  )
-
-regular_60_tbl <- regular_60_tbl %>%
-  dplyr::mutate(
-    x_3035 = as.numeric(x_3035),
-    y_3035 = as.numeric(y_3035)
-  ) %>%
-  dplyr::filter(
-    !is.na(x_3035),
-    !is.na(y_3035),
-    is.finite(x_3035),
-    is.finite(y_3035)
-  )
-
-regular_20_tbl %>%
-  dplyr::summarise(
-    n_rows = dplyr::n(),
-    n_na_x = sum(is.na(x_3035)),
-    n_na_y = sum(is.na(y_3035)),
-    n_non_finite_x = sum(!is.finite(x_3035)),
-    n_non_finite_y = sum(!is.finite(y_3035))
-  )
-
-regular_60_tbl %>%
-  dplyr::summarise(
-    n_rows = dplyr::n(),
-    n_na_x = sum(is.na(x_3035)),
-    n_na_y = sum(is.na(y_3035)),
-    n_non_finite_x = sum(!is.finite(x_3035)),
-    n_non_finite_y = sum(!is.finite(y_3035))
-  )
-
-
-make_sf_from_xy <- function(df, crs_value = 3035) {
-  
-  df <- as.data.frame(df)
-  
-  x <- as.numeric(df$x_3035)
-  y <- as.numeric(df$y_3035)
-  
-  keep <- !is.na(x) & !is.na(y) & is.finite(x) & is.finite(y)
-  
-  df <- df[keep, , drop = FALSE]
-  x <- x[keep]
-  y <- y[keep]
-  
-  geometry <- sf::st_sfc(
-    lapply(
-      seq_along(x),
-      function(i) sf::st_point(c(x[i], y[i]))
     ),
-    crs = crs_value
+  by =
+    individual.id
+]
+
+
+# A new burst begins when:
+# - the row is the first observation of the individual;
+# - or the interval differs from 60 min by more than 10 min.
+
+thin_60_dt[
+  ,
+  new_burst :=
+    is.na(
+      dt_prev_min
+    ) |
+    abs(
+      dt_prev_min -
+        resolution_min_60
+    ) >
+    tolerance_min_60
+]
+
+
+thin_60_dt[
+  ,
+  burst_n :=
+    cumsum(
+      new_burst
+    ),
+  by =
+    individual.id
+]
+
+
+thin_60_dt[
+  ,
+  burst_id :=
+    paste(
+      individual.id,
+      "60min",
+      sprintf(
+        "%04d",
+        burst_n
+      ),
+      sep = "_"
+    )
+]
+
+
+# Count observations per burst.
+
+thin_60_dt[
+  ,
+  n_points_burst :=
+    .N,
+  by = .(
+    individual.id,
+    burst_id
   )
+]
+
+
+# Retain bursts containing at least three points.
+
+regular_60_dt <- thin_60_dt[
+  n_points_burst >=
+    min_points_per_burst
+]
+
+
+data.table::setorder(
+  regular_60_dt,
+  individual.id,
+  burst_id,
+  timestamp
+)
+
+
+#'------------------------------------------------------------------------------
+# 4.4 Add within-burst temporal diagnostics ----
+#'------------------------------------------------------------------------------
+
+regular_60_dt[
+  ,
+  row_in_burst :=
+    seq_len(
+      .N
+    ),
+  by = .(
+    individual.id,
+    burst_id
+  )
+]
+
+
+regular_60_dt[
+  ,
+  dt_prev_burst_min :=
+    as.numeric(
+      difftime(
+        timestamp,
+        data.table::shift(
+          timestamp
+        ),
+        units = "mins"
+      )
+    ),
+  by = .(
+    individual.id,
+    burst_id
+  )
+]
+
+
+regular_60_dt[
+  ,
+  dt_next_burst_min :=
+    as.numeric(
+      difftime(
+        data.table::shift(
+          timestamp,
+          type = "lead"
+        ),
+        timestamp,
+        units = "mins"
+      )
+    ),
+  by = .(
+    individual.id,
+    burst_id
+  )
+]
+
+
+regular_60_dt[
+  ,
+  has_next_regular :=
+    !is.na(
+      dt_next_burst_min
+    ) &
+    abs(
+      dt_next_burst_min -
+        resolution_min_60
+    ) <=
+    tolerance_min_60
+]
+
+
+regular_60_dt[
+  ,
+  lag_deviation_next_min :=
+    dt_next_burst_min -
+    resolution_min_60
+]
+
+
+#'------------------------------------------------------------------------------
+# 4.5 Control the resulting dataset ----
+#'------------------------------------------------------------------------------
+
+timing_60 <- regular_60_dt[
+  ,
+  .(
+    resolution_min =
+      data.table::first(
+        resolution_min
+      ),
+    
+    n_individuals =
+      data.table::uniqueN(
+        individual.local.identifier
+      ),
+    
+    n_points_retained =
+      .N,
+    
+    n_bursts =
+      data.table::uniqueN(
+        burst_id
+      ),
+    
+    n_valid_transitions =
+      sum(
+        has_next_regular,
+        na.rm = TRUE
+      ),
+    
+    n_terminal_points =
+      sum(
+        !has_next_regular |
+          is.na(
+            has_next_regular
+          )
+      )
+  )
+]
+
+
+timing_60[
+  ,
+  expected_valid_transitions :=
+    n_points_retained -
+    n_bursts
+]
+
+
+print(
+  timing_60
+)
+
+
+# Individual-level diagnostic.
+
+summary_by_individual_60 <- regular_60_dt[
+  ,
+  .(
+    n_points_retained =
+      .N,
+    
+    n_bursts =
+      data.table::uniqueN(
+        burst_id
+      ),
+    
+    n_valid_transitions =
+      sum(
+        has_next_regular,
+        na.rm = TRUE
+      ),
+    
+    median_points_per_burst =
+      as.numeric(
+        stats::median(
+          n_points_burst,
+          na.rm = TRUE
+        )
+      ),
+    
+    max_points_per_burst =
+      max(
+        n_points_burst,
+        na.rm = TRUE
+      )
+  ),
+  by = .(
+    resolution_class,
+    individual.local.identifier
+  )
+]
+
+
+low_data_individuals_60 <-
+  summary_by_individual_60[
+    n_valid_transitions < 200
+  ][
+    order(
+      n_valid_transitions
+    )
+  ]
+
+
+print(
+  low_data_individuals_60,
+  nrows = Inf
+)
+
+
+#'------------------------------------------------------------------------------
+# 4.6 Create the spatial dataset only after thinning ----
+#'------------------------------------------------------------------------------
+
+# Remove temporary variables that are not required downstream.
+
+regular_60_tbl <- data.table::copy(
+  regular_60_dt
+)
+
+regular_60_tbl[
+  ,
+  c(
+    "timestamp_numeric",
+    "interval_60_id",
+    "new_burst"
+  ) :=
+    NULL
+]
+
+
+# Create points initially in geographic coordinates.
+
+regular_60_sf <- sf::st_as_sf(
+  as.data.frame(
+    regular_60_tbl
+  ),
+  coords = c(
+    "lon",
+    "lat"
+  ),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# Project only the retained points to EPSG:3035.
+
+regular_60_sf <- sf::st_transform(
+  regular_60_sf,
+  3035
+)
+
+
+# Add projected coordinates required by later analyses.
+
+xy_3035 <- sf::st_coordinates(
+  regular_60_sf
+)
+
+regular_60_sf$x_3035 <-
+  as.numeric(
+    xy_3035[, 1]
+  )
+
+regular_60_sf$y_3035 <-
+  as.numeric(
+    xy_3035[, 2]
+  )
+
+
+# Final controls.
+
+stopifnot(
+  all(
+    is.finite(
+      regular_60_sf$x_3035
+    )
+  ),
   
-  sf::st_sf(
-    df,
-    geometry = geometry
-  )
-}
-
-regular_20_sf <- make_sf_from_xy(regular_20_tbl, crs_value = 3035)
-regular_60_sf <- make_sf_from_xy(regular_60_tbl, crs_value = 3035)
-
-sf::st_crs(regular_20_sf)
-sf::st_crs(regular_60_sf)
-
-sum(sf::st_is_empty(regular_20_sf))
-sum(sf::st_is_empty(regular_60_sf))
+  all(
+    is.finite(
+      regular_60_sf$y_3035
+    )
+  ),
+  
+  sf::st_crs(
+    regular_60_sf
+  )$epsg ==
+    3035
+)
 
 
-#' Step 4.7 Save outputs ----
-saveRDS(regular_20_sf,
-  file.path(output_dir, "GE_20_min_thinned_behavior_assigned.rds"),
-  compress = "gzip")
+print(
+  regular_60_sf
+)
 
-saveRDS(regular_60_sf,
-  file.path(output_dir, "GE_60_min_thinned_behavior_assigned.rds"),
-  compress = "gzip")
+
+#'------------------------------------------------------------------------------
+# 4.7 Save the 60-min dataset ----
+#'------------------------------------------------------------------------------
+
+saveRDS(
+  regular_60_sf,
+  file.path(
+    output_dir,
+    "GE_60_min_thinned_behavior_assigned2.rds"
+  ),
+  compress = "gzip"
+)
 
 
 
@@ -1422,12 +2359,18 @@ extract_hfi <- function(df_sf,
       ID = FALSE
     )[[1]]
     
-    # Maximum HFI inside buffer
-    df[[paste0("hfi_max_", r, "m")]] <- terra::extract(
+    # Third quartile of HFI inside buffer
+    df[[paste0("hfi_q75_", r, "m")]] <- terra::extract(
       raster,
       buf_r,
-      fun = max,
-      na.rm = TRUE,
+      fun = function(x, ...) {
+        stats::quantile(
+          x,
+          probs = 0.90,
+          na.rm = TRUE,
+          names = FALSE
+        )
+      },
       ID = FALSE
     )[[1]]
     
@@ -1457,11 +2400,11 @@ regular_60_hfi <- extract_hfi(regular_60_sf)
 hfi_columns <- c(
   "hfi_point",
   "hfi_mean_500m",
-  "hfi_max_500m",
   "hfi_q75_500m",
   "hfi_mean_1000m",
-  "hfi_max_1000m",
-  "hfi_q75_1000m"
+  "hfi_q75_1000m", 
+  "hfi_q90_1000m",
+  "hfi_q90_500m"
 )
 
 regular_20_hfi[, hfi_columns] |>
@@ -1469,6 +2412,161 @@ regular_20_hfi[, hfi_columns] |>
 
 regular_60_hfi[, hfi_columns] |>
   summary()
+
+# clean 
+
+
+regular_60_hfi_clean <- regular_60_hfi
+
+
+# Harmonise individual identifier.
+
+if (
+  !"individual.local.identifier" %in%
+  names(regular_60_hfi_clean) &&
+  "individual_local_identifier" %in%
+  names(regular_60_hfi_clean)
+) {
+  regular_60_hfi_clean <-
+    regular_60_hfi_clean %>%
+    dplyr::rename(
+      individual.local.identifier =
+        individual_local_identifier
+    )
+}
+
+
+# Harmonise ground-speed name.
+
+if (
+  !"ground_speed" %in%
+  names(regular_60_hfi_clean) &&
+  "ground.speed" %in%
+  names(regular_60_hfi_clean)
+) {
+  regular_60_hfi_clean <-
+    regular_60_hfi_clean %>%
+    dplyr::rename(
+      ground_speed =
+        ground.speed
+    )
+}
+
+
+# Harmonise height name.
+
+if (
+  !"height_above_ellipsoid" %in%
+  names(regular_60_hfi_clean) &&
+  "height.above.ellipsoid" %in%
+  names(regular_60_hfi_clean)
+) {
+  regular_60_hfi_clean <-
+    regular_60_hfi_clean %>%
+    dplyr::rename(
+      height_above_ellipsoid =
+        height.above.ellipsoid
+    )
+}
+
+
+# Harmonise timestamp.
+
+if (
+  !"timestamp" %in%
+  names(regular_60_hfi_clean) &&
+  "gps_timestamp" %in%
+  names(regular_60_hfi_clean)
+) {
+  regular_60_hfi_clean <-
+    regular_60_hfi_clean %>%
+    dplyr::rename(
+      timestamp =
+        gps_timestamp
+    )
+}
+
+columns_to_keep_60 <- c(
+  "sensor_type_id",
+  "individual.local.identifier",
+  "eobs_horizontal_accuracy_estimate",
+  "eobs_speed_accuracy_estimate",
+  "eobs_type_of_fix",
+  "gps_dop",
+  "gps_satellite_count",
+  "ground_speed",
+  "height_above_ellipsoid",
+  "timestamp",
+  "lon",
+  "lat",
+  "dist.traveled",
+  "rf8fitted",
+  "behavior_assignment_method",
+  "behavior_base",
+  "behavior_reclassified",
+  "behavior_reclassification_rule",
+  "burst_n",
+  "row_in_burst",
+  "hfi_point",
+  "hfi_mean_500m",
+  "hfi_q75_500m",
+  "hfi_mean_1000m",
+  "hfi_q75_1000m"
+)
+
+missing_final_columns_60 <- setdiff(
+  columns_to_keep_60,
+  names(regular_60_hfi_clean)
+)
+
+print(
+  missing_final_columns_60
+)
+
+if (
+  length(
+    missing_final_columns_60
+  ) > 0L
+) {
+  stop(
+    paste0(
+      "Missing required output columns: ",
+      paste(
+        missing_final_columns_60,
+        collapse = ", "
+      )
+    )
+  )
+}
+
+
+regular_60_hfi_clean <-
+  regular_60_hfi_clean %>%
+  dplyr::select(
+    dplyr::all_of(
+      columns_to_keep_60
+    )
+  )
+
+
+hfi_columns <- c(
+  "hfi_point",
+  "hfi_mean_500m",
+  "hfi_q75_500m",
+  "hfi_mean_1000m",
+  "hfi_q75_1000m"
+)
+
+
+summary(
+  regular_60_hfi_clean[
+    ,
+    hfi_columns,
+    drop = FALSE
+  ]
+)
+
+
 
 # Save outputs
 saveRDS(
@@ -1478,7 +2576,7 @@ saveRDS(
 )
 
 saveRDS(
-  regular_60_hfi,
+  regular_60_hfi_clean,
   file.path(output_dir, "GE_60_min_thinned_behavior_assigned_hfi.rds"),
   compress = "gzip"
 )
