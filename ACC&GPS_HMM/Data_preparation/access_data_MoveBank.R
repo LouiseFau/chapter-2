@@ -33,7 +33,6 @@ speed_max_kmh <- 70
 
 #' Movebank connection
 movebank_username <- readline(prompt = "Nom d'utilisateur Movebank : ")
-
 movebank_connection <- movebank_handle(username = movebank_username)
 
 #' output dir
@@ -471,7 +470,6 @@ cleaning_summary |>
     n = Inf
   )
 
-
 print(lost_individuals,n = Inf)
 
 # 5. Save cleaned data and cleaning summary ----
@@ -479,6 +477,4 @@ saveRDS(
   clean_gps,
   file.path(
     output_dir,
-    "gps_clean_by_individual.rds"
-  )
-)
+    "gps_clean_by_individual.rds"))
