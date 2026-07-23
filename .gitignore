@@ -3,7 +3,7 @@
 .RData
 .Ruserdata
 
-git add .gitignore
+
 /Raster_layers/
 /HMM/HMM on ACC-classified behaviors/HMM enzo.R
 
