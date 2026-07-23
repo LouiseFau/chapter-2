@@ -5,6 +5,7 @@
 
 git add .gitignore
 /Raster_layers/
+/HMM/HMM on ACC-classified behaviors/HMM enzo.R
 
 # Local / non-versioned analysis scripts
 preparation donnee aigle ssf/
