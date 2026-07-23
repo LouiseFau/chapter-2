@@ -2,3 +2,55 @@
 .Rhistory
 .RData
 .Ruserdata
+
+git add .gitignore
+/Raster_layers/
+
+# Local / non-versioned analysis scripts
+preparation donnee aigle ssf/
+exploration donnee aigle/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Raw data
+DONNEES AIGLES/
+JH Behavioral classification/Fichier complet original/
+
+# Intermediate outputs
+**/donnees intermediaire*/
+**/donnes intermediaire*/
+**/donnees filtree intermediaire*/
+**/donnes filtree intermediaire*/
+
+# Large data files
+*.rds
+*.RData
+*.csv
+*.tif
+*.tiff
+
+# Spatial data
+*.gpkg
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+
+# Generated figures
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# Temporary/cache files
+*.tmp
+*.log
