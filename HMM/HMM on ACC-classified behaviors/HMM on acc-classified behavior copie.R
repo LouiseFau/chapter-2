@@ -797,38 +797,29 @@ print(
 #' m_hfi_point_linear_20         point         point     linear           140. 77171.     104.   2.75 e-23
 #' m_null_20                     none          none      none             134. 77305.     238.   1.82 e-52
 
-# save models 
-model_bundle_all_20 <- list(
-  models = model_objects_20,
-  model_specifications = model_specs_20,
-  model_comparison = model_comparison_all_20,
-  model_data = transition_model_all_20,
-  state_levels = state_levels_3,
-  spline_k = spline_k,
-  saved_at = Sys.time(),
-  session_info = utils::sessionInfo()
-)
+# 2.6 Save models 
+# model_bundle_all_20 <- list(
+#   models = model_objects_20,
+#   model_specifications = model_specs_20,
+#   model_comparison = model_comparison_all_20,
+#   model_data = transition_model_all_20,
+#   state_levels = state_levels_3,
+#   spline_k = spline_k,
+#   saved_at = Sys.time(),
+#   session_info = utils::sessionInfo()
+# )
+# 
+# step3_output_directory <- paste0("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/","THESE/CHAPITRE 2/git/chapter-2/HMM/","HMM on ACC-classified behaviors/Models-fitted")
+# 
+# dir.create(step3_output_directory,recursive = TRUE,showWarnings = FALSE)
 
-step3_output_directory <- paste0("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/",
-  "THESE/CHAPITRE 2/git/chapter-2/HMM/",
-  "HMM on ACC-classified behaviors/Models-fitted"
-)
+# saveRDS(model_bundle_all_20,file = file.path(step3_output_directory,"candidate_multinomial_models_20min.rds"),ompress = FALSE)
 
-dir.create(
-  step3_output_directory,
-  recursive = TRUE,
-  showWarnings = FALSE
-)
-
-saveRDS(
-  model_bundle_all_20,
-  file = file.path(
-    step3_output_directory,
-    "candidate_multinomial_models_20min.rds"
-  ),
-  compress = FALSE)
+# models <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/Models-fitted/candidate_multinomial_models_20min.rds")
 
 # Inspect best models details 
+candidate_multinomial_models_20min <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/Models-fitted/candidate_multinomial_models_20min.rds")
+
 best_model_name_20 <- model_comparison_all_20$model[[1]]
 best_model_20 <- model_objects_20[[best_model_name_20]]
 
@@ -844,7 +835,83 @@ print(
 
 cat("\nModel summary:\n")
 print(summary(best_model_20))
-
+# Family: multinom 
+# Link function: 
+#   
+#   Formula:
+#   arrival_state_id ~ behavior_grouped * (age_days_z + distance_to_nest_km_z + 
+#                                            distance_ridgeline_z + ruggedness_z + cos_Diel + sin_Time) + 
+#   s(hfi_mean_1000m_z, by = behavior_grouped, bs = "cr", k = 6) + 
+#   s(individual.local.identifier, bs = "re")
+# <environment: 0x75c27ac10>
+#   ~behavior_grouped * (age_days_z + distance_to_nest_km_z + distance_ridgeline_z + 
+#                          ruggedness_z + cos_Diel + sin_Time) + s(hfi_mean_1000m_z, 
+#                                                                  by = behavior_grouped, bs = "cr", k = 6) + s(individual.local.identifier, 
+#                                                                                                               bs = "re")
+# <environment: 0x75c27ac10>
+#   
+#   Parametric coefficients:
+#   Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)                                      0.87971    0.06553  13.425  < 2e-16 ***
+#   behavior_groupedresting                          2.18237    0.06621  32.960  < 2e-16 ***
+#   behavior_groupedfeeding                          1.21898    0.15434   7.898 2.83e-15 ***
+#   age_days_z                                       0.13882    0.01573   8.827  < 2e-16 ***
+#   distance_to_nest_km_z                           -0.10099    0.01687  -5.987 2.14e-09 ***
+#   distance_ridgeline_z                             0.01987    0.01484   1.339 0.180623    
+# ruggedness_z                                     0.06743    0.01550   4.351 1.36e-05 ***
+#   cos_Diel                                         0.92036    0.06485  14.192  < 2e-16 ***
+#   sin_Time                                         0.38794    0.03424  11.329  < 2e-16 ***
+#   behavior_groupedresting:age_days_z              -0.09961    0.01950  -5.107 3.27e-07 ***
+#   behavior_groupedfeeding:age_days_z              -0.14396    0.04867  -2.958 0.003099 ** 
+#   behavior_groupedresting:distance_to_nest_km_z    0.12455    0.01878   6.634 3.28e-11 ***
+#   behavior_groupedfeeding:distance_to_nest_km_z    0.20103    0.04895   4.107 4.01e-05 ***
+#   behavior_groupedresting:distance_ridgeline_z     0.13750    0.02017   6.815 9.40e-12 ***
+#   behavior_groupedfeeding:distance_ridgeline_z     0.07517    0.05154   1.459 0.144684    
+# behavior_groupedresting:ruggedness_z            -0.03705    0.01988  -1.864 0.062291 .  
+# behavior_groupedfeeding:ruggedness_z             0.02501    0.04947   0.506 0.613056    
+# behavior_groupedresting:cos_Diel                 0.74675    0.07792   9.584  < 2e-16 ***
+#   behavior_groupedfeeding:cos_Diel                -0.10326    0.18188  -0.568 0.570200    
+# behavior_groupedresting:sin_Time                 0.03729    0.04022   0.927 0.353871    
+# behavior_groupedfeeding:sin_Time                -0.10616    0.09853  -1.077 0.281309    
+# (Intercept).1                                   -2.01288    0.14526 -13.857  < 2e-16 ***
+#   behavior_groupedresting.1                        1.40980    0.15200   9.275  < 2e-16 ***
+#   behavior_groupedfeeding.1                        4.18941    0.19915  21.037  < 2e-16 ***
+#   age_days_z.1                                     0.09906    0.03946   2.510 0.012062 *  
+#   distance_to_nest_km_z.1                         -0.14798    0.04201  -3.523 0.000427 ***
+#   distance_ridgeline_z.1                           0.08107    0.03623   2.238 0.025227 *  
+#   ruggedness_z.1                                   0.04608    0.03984   1.157 0.247412    
+# cos_Diel.1                                       0.59156    0.16067   3.682 0.000231 ***
+#   sin_Time.1                                       0.17930    0.08651   2.073 0.038216 *  
+#   behavior_groupedresting:age_days_z.1            -0.14721    0.04546  -3.238 0.001202 ** 
+#   behavior_groupedfeeding:age_days_z.1            -0.21625    0.06008  -3.599 0.000319 ***
+#   behavior_groupedresting:distance_to_nest_km_z.1  0.16310    0.04505   3.621 0.000294 ***
+#   behavior_groupedfeeding:distance_to_nest_km_z.1  0.21666    0.06058   3.576 0.000349 ***
+#   behavior_groupedresting:distance_ridgeline_z.1   0.27997    0.04280   6.541 6.12e-11 ***
+#   behavior_groupedfeeding:distance_ridgeline_z.1   0.10580    0.06070   1.743 0.081348 .  
+# behavior_groupedresting:ruggedness_z.1          -0.01307    0.04673  -0.280 0.779725    
+# behavior_groupedfeeding:ruggedness_z.1           0.09345    0.06124   1.526 0.127039    
+# behavior_groupedresting:cos_Diel.1               0.34455    0.17851   1.930 0.053592 .  
+# behavior_groupedfeeding:cos_Diel.1               0.35268    0.23266   1.516 0.129554    
+# behavior_groupedresting:sin_Time.1              -0.13706    0.09510  -1.441 0.149510    
+# behavior_groupedfeeding:sin_Time.1               0.00710    0.12614   0.056 0.955114    
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Approximate significance of smooth terms:
+#   edf Ref.df   Chi.sq  p-value    
+# s(hfi_mean_1000m_z):behavior_groupedflight     1.487  1.794   78.999  < 2e-16 ***
+#   s(hfi_mean_1000m_z):behavior_groupedresting    3.516  3.949  124.175  < 2e-16 ***
+#   s(hfi_mean_1000m_z):behavior_groupedfeeding    1.038  1.074    4.129   0.0443 *  
+#   s(individual.local.identifier)                49.074 55.000 1532.007  < 2e-16 ***
+#   s.1(hfi_mean_1000m_z):behavior_groupedflight   1.014  1.029   26.983 1.17e-06 ***
+#   s.1(hfi_mean_1000m_z):behavior_groupedresting  2.439  2.902    7.965   0.0317 *  
+#   s.1(hfi_mean_1000m_z):behavior_groupedfeeding  1.018  1.035    0.002   0.9952    
+# s.1(individual.local.identifier)              43.081 55.000  854.663  < 2e-16 ***
+#   ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Deviance explained = 17.1%
+# -REML =  38668  Scale est. = 1         n = 93699
 
 
 
