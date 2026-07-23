@@ -7,6 +7,10 @@
 #'emigrate and which behaviors have been classified by Julia Hatzl and Louise 
 #'Faure (who reuse and adpated J.H random forest script). These data will be 
 #'associated to the acc classified beahviors in "prepare_data.R" script.
+#'**Steps**:
+#'(1) obtain individual list of names
+#'(2) define the period of extraction 
+#'(3) implement some cleaning for the extraction 
 #'------------------------------------------------------------------------------
 
 #'libraries
@@ -14,19 +18,17 @@ library(move)
 library(tidyverse)
 library(lubridate)
 library(move2)
+library(sf)
+library(geosphere)
 
 #' Movebank parameters
 study_id <- 282734839
 speed_max_kmh <- 70
 
 #' Movebank connection
-movebank_username <- readline(
-  prompt = "Nom d'utilisateur Movebank : "
-)
+movebank_username <- readline(prompt = "Nom d'utilisateur Movebank : ")
 
-movebank_connection <- movebank_handle(
-  username = movebank_username
-)
+movebank_connection <- movebank_handle(username = movebank_username)
 
 #' output dir
 output_dir <- paste0("/Users/louisefaure/Desktop/dossier sans titre/", "donnees aigles gps burst")
@@ -37,8 +39,7 @@ emig_dat <- readRDS('/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/
 non_classified_birds_dir <- file.path(
   "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel",
   "THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES",
-  "Individus non classifies/rf_assigned"
-)
+  "Individus non classifies/rf_assigned")
 julia_classified_birds_file <- read.csv("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/classified_acc_data/2024_01_24_alldata_allbirds_merged_rf_raw.csv")
 
 #' general parameters
@@ -51,7 +52,6 @@ tz_loc <- "Europe/Zurich"
 
 # 1. Obtain the list of individuals ----
 classified_names <- julia_classified_birds_file |> transmute( individual.local.identifier = as.character(individualID))
-
 non_classified_names <- list.files(
   non_classified_birds_dir,
   pattern = "\\.csv$",
@@ -96,7 +96,8 @@ extraction_periods <- individuals |>
 stopifnot(!anyNA(extraction_periods$extraction_start))
 
 
-#' 3. Download GPS data for one individual and one period
+# 3. Download GPS data for one individual and one period ----
+# 3.1 Function for extraction ----
 download_individual_gps <- function(
     individual_id,
     extraction_start,
@@ -233,7 +234,7 @@ download_individual_gps <- function(
 
 
 
-#' 4. Download all selected individuals
+# 3.2 Download all selected individuals ----
 gps_bursts_raw_move2 <- extraction_periods |>
   transmute(
     individual_id =
@@ -261,35 +262,17 @@ gps_bursts_raw_move2 <- extraction_periods |>
 
 
 
-#' 5. Save raw downloaded GPS data
-saveRDS(
-  gps_bursts_raw_move2,
-  file.path(
-    output_dir,
-    "gps_bursts_raw_move2.rds"
-  )
-)
+# 3.3 Save raw downloaded GPS data ----
+saveRDS(gps_bursts_raw_move2,file.path(output_dir,"gps_bursts_raw_move2.rds"))
 
 
-# 6. Clean data
-library(tidyverse)
-library(sf)
-library(geosphere)
+# 4. Data cleaning ----
+# 4.1. Split GPS data by individual ----
+gps_ls <- split(gps_bursts_raw_move2,gps_bursts_raw_move2$individual_local_identifier)
 
 
-# 1. Split GPS data by individual
-gps_ls <- split(
-  gps_bursts_raw_move2,
-  gps_bursts_raw_move2$individual_local_identifier
-)
-
-
-# 2. Clean GPS data by individual
-progress_bar <- txtProgressBar(
-  min = 0,
-  max = length(gps_ls),
-  style = 3
-)
+# 4.2 Clean GPS data by individual -----
+progress_bar <- txtProgressBar(min = 0,max = length(gps_ls),style = 3)
 
 clean_gps <- lapply(
   seq_along(gps_ls),
@@ -389,11 +372,11 @@ clean_gps <- lapply(
 close(progress_bar)
 
 
-# 3. Assign individual names before removing empty elements
+# 4.3 Assign individual names before removing empty elements ----
 names(clean_gps) <- names(gps_ls)
 
 
-# 4. Summarize the cleaning process
+# 4.4  Summarize the cleaning process ----
 cleaning_summary <- tibble(
   individual.local.identifier = names(gps_ls),
   number.raw = map_int(
@@ -412,7 +395,7 @@ cleaning_summary <- tibble(
   )
 
 
-# 5. Identify individuals lost during cleaning
+# 4.5 Identify individuals lost during cleaning ----
 lost_individuals <- cleaning_summary |>
   filter(individual.lost) |>
   select(
@@ -423,11 +406,11 @@ lost_individuals <- cleaning_summary |>
   )
 
 
-# 6. Remove empty individuals while retaining their names
+# 4.6  Remove empty individuals while retaining their names ----
 clean_gps <- compact(clean_gps)
 
 
-# 7. Global summary
+# 4.7. Global summary ----
 cleaning_overview <- cleaning_summary |>
   summarise(
     number.initial.individuals = n(),
@@ -445,11 +428,28 @@ cleaning_overview <- cleaning_summary |>
 
 print(cleaning_overview)
 print(lost_individuals)
-# 8. Print the total number of removed locations
-print(
-  cleaning_overview$number.removed.locations
-)
-# 9. Print removed locations by individual
+print(cleaning_overview$number.removed.locations)
+
+# 4.9 Print removed locations by individual ----
+cleaning_summary |>
+  arrange(
+    desc(number.removed)
+  ) |>
+  select(
+    individual.local.identifier,
+    number.raw,
+    number.clean,
+    number.removed,
+    proportion.retained
+  ) |>
+  print(
+    n = Inf
+  )
+
+print(cleaning_overview$number.removed.locations)
+
+
+# 4.10 Print removed locations by individual ----
 cleaning_summary |>
   arrange(
     desc(number.removed)
@@ -466,55 +466,9 @@ cleaning_summary |>
   )
 
 
-# 7. Global summary
-cleaning_overview <- cleaning_summary |>
-  summarise(
-    number.initial.individuals = n(),
-    number.retained.individuals =
-      sum(!individual.lost),
-    number.lost.individuals =
-      sum(individual.lost),
-    number.raw.locations =
-      sum(number.raw),
-    number.clean.locations =
-      sum(number.clean),
-    number.removed.locations =
-      sum(number.removed)
-  )
+print(lost_individuals,n = Inf)
 
-print(cleaning_overview)
-
-
-# 8. Print the total number of removed locations
-print(
-  cleaning_overview$number.removed.locations
-)
-
-
-# 9. Print removed locations by individual
-cleaning_summary |>
-  arrange(
-    desc(number.removed)
-  ) |>
-  select(
-    individual.local.identifier,
-    number.raw,
-    number.clean,
-    number.removed,
-    proportion.retained
-  ) |>
-  print(
-    n = Inf
-  )
-
-
-# 10. Print lost individuals
-print(
-  lost_individuals,
-  n = Inf
-)
-
-# 8. Save cleaned data and cleaning summary
+# 5. Save cleaned data and cleaning summary ----
 saveRDS(
   clean_gps,
   file.path(
