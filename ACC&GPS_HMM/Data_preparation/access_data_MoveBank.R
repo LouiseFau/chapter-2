@@ -10,7 +10,13 @@
 #'**Steps**:
 #'(1) obtain individual list of names
 #'(2) define the period of extraction 
-#'(3) implement some cleaning for the extraction 
+#'(3) donwload the data 
+#'(4) clean the data 
+#'  (a) remove empty geometry or missing latitude / longitude
+#'  (b) date beyond the extraction period 
+#'  (c) double timestamp. If two location have the same timestamp, the retained 
+#'  one has an eobs_status, a gps_dop, the smallest gps dop and a statuts "A",
+#'  (d) remove all location with a gps_dop below 10
 #'------------------------------------------------------------------------------
 
 #'libraries
