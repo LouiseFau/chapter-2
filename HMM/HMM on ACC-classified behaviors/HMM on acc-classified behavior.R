@@ -46,7 +46,7 @@ nest_site <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel
 ge_20min <- ge_20min |>
   dplyr::mutate(
     individual.local.identifier = as.character(individual.local.identifier),
-    time_UTC = as.POSIXct(.data[[time_col]], tz = "UTC"),
+    time_UTC = as.POSIXct(ge_20min$gps_timestamp, tz = "UTC"),
     time_local = lubridate::with_tz(time_UTC, tzone = "Europe/Zurich"),
     behavior_state = as.character(behavior_reclassified)
   ) |>
@@ -283,27 +283,20 @@ print(rare_transitions_20)
 
 
 #'##############################################################################
-#' ### Step 3 : model fitting
+#' ### Step 3: model fitting
 #'
-#' **Philosophy**:
 #' We fit one multinomial GAM per HFI spatial scale.
 #'
-#' The response variable is the arrival behavioral state:
+#' Response variable:
 #'   behavior_grouped_next
 #'
-#' The departure state is:
+#' Departure state:
 #'   behavior_grouped
 #'
 #' The 3 states are:
 #'   1. flight
 #'   2. resting
-#'   4. feeding
-#'
-#' We compare:
-#'   - a null model without HFI
-#'   - a model with HFI under the GPS point
-#'   - a model with mean HFI within 500 m
-#'   - a model with mean HFI within 1000 m
+#'   3. feeding
 #'
 #' For mgcv::multinom(K = 2), the response must be coded as:
 #'   0 = flight
@@ -313,14 +306,17 @@ print(rare_transitions_20)
 #' The first state, flight, is the reference arrival state.
 #'##############################################################################
 
+state_levels_3 <- c(
+  "flight",
+  "resting",
+  "feeding"
+)
 
-# 2.1 Prepare one common dataset for all candidate models ----
-# We use the same rows for the null model and the three HFI-scale models.
-# This is important because AIC comparisons are only meaningful when models are
-# fitted to the same response data.
+
+# 3.1 Prepare one common dataset for all candidate models ----
 
 transition_model_all_20 <- transitions_20 |>
-  filter(
+  dplyr::filter(
     !is.na(behavior_grouped),
     !is.na(behavior_grouped_next),
     !is.na(hfi_point_z),
@@ -332,49 +328,50 @@ transition_model_all_20 <- transitions_20 |>
     !is.na(sin_Time),
     !is.na(individual.local.identifier)
   ) |>
-  mutate(
+  dplyr::mutate(
     behavior_grouped = factor(
       behavior_grouped,
-      levels = state_levels_5
+      levels = state_levels_3
     ),
     behavior_grouped_next = factor(
       behavior_grouped_next,
-      levels = state_levels_5
+      levels = state_levels_3
     ),
     individual.local.identifier = factor(individual.local.identifier),
     
     arrival_state_id = as.integer(behavior_grouped_next) - 1
   )
 
-# 2.2 Check model dataset ----
+
+# 3.2 Check model dataset ----
 
 model_data_summary_all_20 <- transition_model_all_20 |>
-  count(
+  dplyr::count(
     behavior_grouped,
     behavior_grouped_next,
     transition_type,
     name = "n"
   ) |>
-  group_by(behavior_grouped) |>
-  mutate(
+  dplyr::group_by(behavior_grouped) |>
+  dplyr::mutate(
     n_from_state = sum(n),
     transition_probability_raw = n / n_from_state
   ) |>
-  ungroup() |>
-  arrange(behavior_grouped, behavior_grouped_next)
+  dplyr::ungroup() |>
+  dplyr::arrange(behavior_grouped, behavior_grouped_next)
 
 print(model_data_summary_all_20)
 
 arrival_state_check <- transition_model_all_20 |>
-  count(behavior_grouped_next, arrival_state_id, name = "n") |>
-  arrange(arrival_state_id)
+  dplyr::count(behavior_grouped_next, arrival_state_id, name = "n") |>
+  dplyr::arrange(arrival_state_id)
 
 print(arrival_state_check)
 
 
-# 2.3 Helper function to build multinomial GAM formulas ----
-# mgcv::multinom(K = 4) estimates 4 logits relative to the reference category.
-# Because we have 5 states, we need a list of 4 formulas.
+# 3.3 Helper function to build multinomial GAM formulas ----
+# mgcv::multinom(K = 2) estimates 2 logits relative to the reference category.
+# Because we have 3 states, we need a list of 2 formulas.
 
 make_multinom_formula <- function(hfi_var = NULL) {
   
@@ -399,19 +396,15 @@ make_multinom_formula <- function(hfi_var = NULL) {
   
   list(
     as.formula(paste("arrival_state_id ~", rhs)),
-    as.formula(paste("~", rhs)),
-    as.formula(paste("~", rhs)),
     as.formula(paste("~", rhs))
   )
 }
 
 
-# 2.4 Null model: no HFI ----
-# This model includes departure state, age, distance to nest, time of day,
-# and individual identity, but no human footprint index.
+# 3.4 Null model: no HFI ----
 m_null_20 <- mgcv::gam(
   formula = make_multinom_formula(hfi_var = NULL),
-  family = mgcv::multinom(K = 4),
+  family = mgcv::multinom(K = 2),
   data = transition_model_all_20,
   method = "ML"
 )
@@ -419,32 +412,30 @@ m_null_20 <- mgcv::gam(
 summary(m_null_20)
 
 
-# 2.5 Model 1: HFI under GPS point ----
+# 3.5 Model 1: HFI under GPS point ----
 m_hfi_point_all_20 <- mgcv::gam(
   formula = make_multinom_formula(hfi_var = "hfi_point_z"),
-  family = mgcv::multinom(K = 4),
+  family = mgcv::multinom(K = 2),
   data = transition_model_all_20,
   method = "ML"
 )
 
 summary(m_hfi_point_all_20)
 
-
-# 2.6 Model 2: mean HFI within 500 m radius ----
+# 3.6 Model 2: mean HFI within 500 m radius ----
 m_hfi_500m_all_20 <- mgcv::gam(
   formula = make_multinom_formula(hfi_var = "hfi_mean_500m_z"),
-  family = mgcv::multinom(K = 4),
+  family = mgcv::multinom(K = 2),
   data = transition_model_all_20,
   method = "ML"
 )
 
 summary(m_hfi_500m_all_20)
 
-
-# 2.7 Model 3: mean HFI within 1000 m radius ----
+# 3.7 Model 3: mean HFI within 1000 m radius ----
 m_hfi_1000m_all_20 <- mgcv::gam(
   formula = make_multinom_formula(hfi_var = "hfi_mean_1000m_z"),
-  family = mgcv::multinom(K = 4),
+  family = mgcv::multinom(K = 2),
   data = transition_model_all_20,
   method = "ML"
 )
@@ -452,10 +443,7 @@ m_hfi_1000m_all_20 <- mgcv::gam(
 summary(m_hfi_1000m_all_20)
 
 
-# 2.8 Compare candidate models with AIC ----
-# The null model tells us whether HFI improves the transition model.
-# The three HFI models tell us which spatial scale is best supported.
-
+# 3.8 Compare candidate models with AIC ----
 model_comparison_all_20 <- AIC(
   m_null_20,
   m_hfi_point_all_20,
@@ -468,25 +456,26 @@ model_comparison_all_20$model <- rownames(model_comparison_all_20)
 rownames(model_comparison_all_20) <- NULL
 
 model_comparison_all_20 <- model_comparison_all_20 |>
-  mutate(
+  dplyr::mutate(
     delta_AIC = AIC - min(AIC),
     AIC_weight = exp(-0.5 * delta_AIC) / sum(exp(-0.5 * delta_AIC))
   ) |>
-  arrange(AIC) |>
-  select(model, df, AIC, delta_AIC, AIC_weight)
+  dplyr::arrange(AIC) |>
+  dplyr::select(model, df, AIC, delta_AIC, AIC_weight)
 
 print(model_comparison_all_20)
-#' we find that the best model is at 1000m resolution
-#' model                 df     AIC       delta_AIC   AIC_weight
-#' m_hfi_1000m_all_20  279.7587 75737.38  0.00000  9.961537e-01
-#' m_hfi_500m_all_20   279.5177 75749.79  12.40755 2.014005e-03
-#' m_hfi_point_all_20  279.3300 75749.98  12.59664 1.832318e-03
-#' m_null_20           260.5271 75772.64  35.26032 2.196064e-08
+#'              model       df      AIC delta_AIC   AIC_weight
+#'m_hfi_1000m_all_20 129.7369 77493.23   0.00000 1.000000e+00
+#' m_hfi_500m_all_20 129.8399 77527.37  34.14160 3.856962e-08
+#' m_hfi_point_all_20 129.8588 77556.72  63.49247 1.632246e-14
+#' m_null_20 123.8969 77725.61 232.37977 3.462379e-51
+
+
 
 #'##############################################################################
-#' ### Step 3 : plot the results
+#' ### Step 4: plot the results
 #'
-#' For the 5-state multinomial transition model, coefficient-level plots are hard
+#' For the 3-state multinomial transition model, coefficient-level plots are hard
 #' to interpret because mgcv::multinom() estimates log-odds relative to a reference
 #' arrival state.
 #'
@@ -500,14 +489,12 @@ print(model_comparison_all_20)
 #'##############################################################################
 
 
-# 3.1 Define model list and HFI variables ----
+# 4.1 Define model list and HFI variables ----
 
-state_levels_5 <- c(
+state_levels_3 <- c(
   "flight",
-  "overnight_resting",
-  "diurnal_resting",
-  "feeding",
-  "walking"
+  "resting",
+  "feeding"
 )
 
 model_info_20 <- tibble::tibble(
@@ -539,8 +526,7 @@ model_objects_20 <- list(
 )
 
 
-# 3.2 Helper function: predict transition probabilities ----
-
+# 4.2 Helper function: predict transition probabilities ----
 predict_transition_probabilities <- function(model,
                                              hfi_var,
                                              hfi_values,
@@ -548,17 +534,17 @@ predict_transition_probabilities <- function(model,
                                              model_data = transition_model_all_20) {
   
   newdata <- expand.grid(
-    behavior_grouped = state_levels_5,
+    behavior_grouped = state_levels_3,
     hfi_z = hfi_values,
     KEEP.OUT.ATTRS = FALSE,
     stringsAsFactors = FALSE
   )
   
   newdata <- newdata |>
-    mutate(
+    dplyr::mutate(
       behavior_grouped = factor(
         behavior_grouped,
-        levels = state_levels_5
+        levels = state_levels_3
       ),
       age_days_z = 0,
       distance_to_nest_km_z = 0,
@@ -598,38 +584,38 @@ predict_transition_probabilities <- function(model,
   
   pred_prob <- as.data.frame(pred_prob)
   
-  if (ncol(pred_prob) != length(state_levels_5)) {
+  if (ncol(pred_prob) != length(state_levels_3)) {
     stop(
       "The prediction output has ",
       ncol(pred_prob),
       " columns, but ",
-      length(state_levels_5),
+      length(state_levels_3),
       " behavioral states were expected."
     )
   }
   
-  names(pred_prob) <- state_levels_5
+  names(pred_prob) <- state_levels_3
   
-  pred_long <- bind_cols(
+  pred_long <- dplyr::bind_cols(
     newdata |>
-      select(behavior_grouped, hfi_z),
+      dplyr::select(behavior_grouped, hfi_z),
     pred_prob
   ) |>
     tidyr::pivot_longer(
-      cols = all_of(state_levels_5),
+      cols = dplyr::all_of(state_levels_3),
       names_to = "to_state",
       values_to = "transition_probability"
     ) |>
-    mutate(
+    dplyr::mutate(
       panel = panel_name,
       from_state = behavior_grouped,
       to_state = factor(
         to_state,
-        levels = state_levels_5
+        levels = state_levels_3
       ),
       from_state = factor(
         from_state,
-        levels = state_levels_5
+        levels = state_levels_3
       )
     )
   
@@ -637,7 +623,7 @@ predict_transition_probabilities <- function(model,
 }
 
 
-# 3.3 Helper function: extract high-minus-low HFI effect ----
+# 4.3 Helper function: extract high-minus-low HFI effect ----
 
 extract_hfi_delta_probability <- function(model,
                                           hfi_var,
@@ -647,12 +633,12 @@ extract_hfi_delta_probability <- function(model,
   if (is.na(hfi_var)) {
     
     delta_null <- expand.grid(
-      from_state = state_levels_5,
-      to_state = state_levels_5,
+      from_state = state_levels_3,
+      to_state = state_levels_3,
       KEEP.OUT.ATTRS = FALSE,
       stringsAsFactors = FALSE
     ) |>
-      mutate(
+      dplyr::mutate(
         panel = panel_name,
         low_HFI = NA_real_,
         high_HFI = NA_real_,
@@ -664,7 +650,7 @@ extract_hfi_delta_probability <- function(model,
     return(delta_null)
   }
   
-  hfi_low_high <- quantile(
+  hfi_low_high <- stats::quantile(
     model_data[[hfi_var]],
     probs = c(0.05, 0.95),
     na.rm = TRUE
@@ -677,14 +663,14 @@ extract_hfi_delta_probability <- function(model,
     panel_name = panel_name,
     model_data = model_data
   ) |>
-    mutate(
-      hfi_level = case_when(
+    dplyr::mutate(
+      hfi_level = dplyr::case_when(
         hfi_z == as.numeric(hfi_low_high[1]) ~ "low_probability",
         hfi_z == as.numeric(hfi_low_high[2]) ~ "high_probability",
         TRUE ~ NA_character_
       )
     ) |>
-    select(
+    dplyr::select(
       panel,
       from_state,
       to_state,
@@ -695,7 +681,7 @@ extract_hfi_delta_probability <- function(model,
       names_from = hfi_level,
       values_from = transition_probability
     ) |>
-    mutate(
+    dplyr::mutate(
       low_HFI = as.numeric(hfi_low_high[1]),
       high_HFI = as.numeric(hfi_low_high[2]),
       delta_probability = high_probability - low_probability
@@ -705,33 +691,36 @@ extract_hfi_delta_probability <- function(model,
 }
 
 
-# 3.4 Extract HFI effects for all candidate models ----
+# 4.4 Extract HFI effects for all candidate models ----
 
-transition_delta_all_20 <- purrr::map2_dfr(
-  model_info_20$model_name,
+transition_delta_list_20 <- lapply(
   seq_len(nrow(model_info_20)),
-  function(model_name, i) {
+  function(i) {
+    
+    model_name_i <- model_info_20$model_name[i]
     
     extract_hfi_delta_probability(
-      model = model_objects_20[[model_name]],
+      model = model_objects_20[[model_name_i]],
       hfi_var = model_info_20$hfi_var[i],
       panel_name = model_info_20$panel[i],
       model_data = transition_model_all_20
     )
   }
-) |>
-  mutate(
+)
+
+transition_delta_all_20 <- dplyr::bind_rows(transition_delta_list_20) |>
+  dplyr::mutate(
     panel = factor(
       panel,
       levels = model_info_20$panel
     ),
     from_state = factor(
       from_state,
-      levels = state_levels_5
+      levels = state_levels_3
     ),
     to_state = factor(
       to_state,
-      levels = state_levels_5
+      levels = state_levels_3
     ),
     label = sprintf("%.2f", delta_probability)
   )
@@ -739,25 +728,25 @@ transition_delta_all_20 <- purrr::map2_dfr(
 print(transition_delta_all_20)
 
 
-# 3.5 Plot HFI effect on transition probabilities ----
+# 4.5 Plot HFI effect on transition probabilities ----
 
 max_abs_delta_20 <- max(
   abs(transition_delta_all_20$delta_probability),
   na.rm = TRUE
 )
 
-p_hfi_transition_delta_20 <- ggplot(
+p_hfi_transition_delta_20 <- ggplot2::ggplot(
   transition_delta_all_20,
-  aes(
+  ggplot2::aes(
     x = from_state,
     y = to_state,
     fill = delta_probability
   )
 ) +
-  geom_tile(color = "grey70", linewidth = 0.5) +
-  geom_text(aes(label = label), size = 3) +
-  facet_wrap(~ panel, nrow = 1) +
-  scale_fill_gradient2(
+  ggplot2::geom_tile(color = "grey70", linewidth = 0.5) +
+  ggplot2::geom_text(ggplot2::aes(label = label), size = 3) +
+  ggplot2::facet_wrap(~ panel, nrow = 1) +
+  ggplot2::scale_fill_gradient2(
     low = "#3B5BDB",
     mid = "grey95",
     high = "#FF6B4A",
@@ -765,39 +754,34 @@ p_hfi_transition_delta_20 <- ggplot(
     limits = c(-max_abs_delta_20, max_abs_delta_20),
     name = expression(Delta*" transition probability")
   ) +
-  labs(
+  ggplot2::labs(
     x = "Departure state",
     y = "Arrival state",
     title = "Change in predicted transition probabilities along the HFI gradient",
-    subtitle = "P(transition | HFI élevé) - P(transition | HFI faible)"
+    subtitle = "P(transition | high HFI) - P(transition | low HFI)"
   ) +
-  coord_equal() +
-  theme_bw(base_size = 13) +
-  theme(
-    strip.background = element_rect(fill = "white", color = "white"),
-    strip.text = element_text(face = "bold", size = 12),
-    panel.grid = element_blank(),
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.title = element_text(size = 11),
-    legend.text = element_text(size = 10)
+  ggplot2::coord_equal() +
+  ggplot2::theme_bw(base_size = 13) +
+  ggplot2::theme(
+    strip.background = ggplot2::element_rect(fill = "white", color = "white"),
+    strip.text = ggplot2::element_text(face = "bold", size = 12),
+    panel.grid = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+    legend.title = ggplot2::element_text(size = 11),
+    legend.text = ggplot2::element_text(size = 10)
   )
 
 print(p_hfi_transition_delta_20)
 
 
+# 4.6 Save figure ----
 
-
-
-# 3.7 Save figures ----
-output_dir <- "C:/Users/lfaure7/OneDrive/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnes filtree intermediaire"
-
-ggsave(
+ggplot2::ggsave(
   filename = file.path(
-    output_dir,
-    "transition_hfi_delta_probability_20min_5state.png"
+    "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/transition_hfi_delta_probability_60min_3state.png"
   ),
   plot = p_hfi_transition_delta_20,
-  width = 15,
-  height = 5,
+  width = 11,
+  height = 4.5,
   dpi = 300
 )
