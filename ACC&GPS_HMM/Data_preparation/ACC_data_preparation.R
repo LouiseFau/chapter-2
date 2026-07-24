@@ -35,8 +35,7 @@ new_classified_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personne
 
 
 
-#'------------------------------------------------------------------------------
-#'Step 1: prepare dataset and select first 15th week of the dispersal 
+# ------------------------------------------------------------------------------ Step 1: prepare dataset and select first 15th week of the dispersal ----
 #'
 #'**Steps:**
 #'(1) merge recently classified individuals with already classified ones
@@ -136,9 +135,7 @@ saveRDS(
 
 
 
-#' -----------------------------------------------------------------------------
-#' Step 2: assign ACC-classified bursts to the nearest GPS location ----
-#'
+# ----------------------------------------------------------------------------- Step 2: assign ACC-classified bursts to the nearest GPS location ----
 #' **Purpose:** Associate each ACC-classified burst with the temporally nearest 
 #' GPS location from the same individual.
 #'
@@ -156,36 +153,18 @@ library(dplyr)
 library(sf)
 
 
-#'------------------------------------------------------------------------------
-# 2.1 Load the two datasets ----
-#'------------------------------------------------------------------------------
-
-gps <- readRDS(
-  "/Users/louisefaure/Desktop/dossier sans titre/donnees aigles gps burst/gps_clean_by_individual.rds"
-)
+gps <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees aigles gps burst/gps_clean_by_individual.rds")
 
 acc <- readRDS(
   paste0(
     "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/",
     "THESE/CHAPITRE 2/git/chapter-2/HMM/",
     "HMM on ACC-classified behaviors/donnees intermediaire (2)/",
-    "acc_classified_first_15_weeks_all_individuals_merged.rds"
-  )
-)
+    "acc_classified_first_15_weeks_all_individuals_merged.rds"))
 
 
-# Maximum accepted temporal difference between an ACC record
-# and a GPS location.
 
-max_assignment_gap_min <- 60
-
-
-#'------------------------------------------------------------------------------
-# 2.2 Combine the list of GPS objects while preserving geometry ----
-#'------------------------------------------------------------------------------
-
-# The code also works if gps is accidentally a single sf or move2 object.
-
+# 2.1 Combine the list of GPS objects while preserving geometry ----
 if (
   inherits(gps, "sf") ||
   inherits(gps, "move2")
@@ -204,10 +183,7 @@ if (
 
 
 # Check that all GPS objects use the same CRS.
-
-reference_crs <- sf::st_crs(
-  gps_list[[1]]
-)
+reference_crs <- sf::st_crs(gps_list[[1]])
 
 same_crs <- vapply(
   gps_list,
@@ -233,10 +209,8 @@ if (
 
 
 # Create names for unnamed list elements.
-
 gps_list_names <- names(
-  gps_list
-)
+  gps_list)
 
 if (
   is.null(gps_list_names)
@@ -264,7 +238,6 @@ gps_list_names[
 
 
 # Convert every object to sf and retain the original list-element name.
-
 gps_sf_list <- lapply(
   seq_along(
     gps_list
@@ -283,22 +256,12 @@ gps_sf_list <- lapply(
 )
 
 
-gps_sf <- dplyr::bind_rows(
-  gps_sf_list
-)
+gps_sf <- dplyr::bind_rows(gps_sf_list)
 
-gps_sf <- sf::st_as_sf(
-  gps_sf
-)
+gps_sf <- sf::st_as_sf(gps_sf)
 
 
-#'------------------------------------------------------------------------------
-# 2.3 Harmonise GPS column names and timestamps ----
-#'------------------------------------------------------------------------------
-
-# Support both Movebank naming conventions:
-# individual_local_identifier and individual.local.identifier.
-
+# 2.2 Harmonise GPS column names and timestamps ----
 if (
   !"individual_local_identifier" %in%
   names(gps_sf) &&
@@ -372,22 +335,12 @@ if (
 }
 
 
-#'------------------------------------------------------------------------------
 # 2.4 Prepare the ACC-classified behaviour data ----
-#'------------------------------------------------------------------------------
-
 acc_dt <- data.table::as.data.table(
   data.table::copy(
-    acc
-  )
-)
+    acc))
 
-
-required_acc_columns <- c(
-  "individualID",
-  "timestamp",
-  "rf8fitted"
-)
+required_acc_columns <- c("individualID","timestamp","rf8fitted")
 
 missing_acc_columns <- setdiff(
   required_acc_columns,
@@ -449,7 +402,6 @@ acc_dt[
 
 # Keep the required variables and any optional ACC variables
 # that are present in the dataset.
-
 optional_acc_columns <- intersect(
   c(
     "event.id",
@@ -467,13 +419,7 @@ optional_acc_columns <- intersect(
   )
 )
 
-acc_columns_to_keep <- c(
-  "acc_row_id",
-  "individualID",
-  "acc_timestamp",
-  "rf8fitted",
-  optional_acc_columns
-)
+acc_columns_to_keep <- c("acc_row_id","individualID","acc_timestamp","rf8fitted",optional_acc_columns)
 
 acc_points <- acc_dt[
   ,
@@ -482,7 +428,6 @@ acc_points <- acc_dt[
 
 
 # Rename the individual identifier to match the GPS data.
-
 data.table::setnames(
   acc_points,
   old =
@@ -493,7 +438,6 @@ data.table::setnames(
 
 
 # Rename optional identifying columns when available.
-
 if (
   "event.id" %in%
   names(acc_points)
@@ -522,7 +466,6 @@ if (
 
 
 # Remove ACC rows that cannot be used for matching.
-
 acc_points <- acc_points[
   !is.na(
     individual_local_identifier
@@ -539,7 +482,6 @@ acc_points <- acc_points[
 
 # Create a numeric time variable for the rolling join.
 # Numeric Unix time avoids inconsistencies caused only by displayed time zones.
-
 acc_points[
   ,
   join_time :=
@@ -549,10 +491,7 @@ acc_points[
 ]
 
 
-#'------------------------------------------------------------------------------
-# 2.5 Compare individual names between datasets ----
-#'------------------------------------------------------------------------------
-
+# 2.4 Compare individual names between datasets ----
 gps_individuals <- sort(
   unique(
     gps_sf$
@@ -599,24 +538,14 @@ individual_name_diagnostics <- list(
 )
 
 
-print(
-  individual_name_diagnostics
-)
-
-
-# According to your description, this object should contain:
+print(individual_name_diagnostics)
 # "Droslöng17 (eobs 5704)"
 # "Viluoch17 (eobs 4570)"
 
-print(
-  acc_individuals_without_gps
-)
+print(acc_individuals_without_gps)
 
 
-#'------------------------------------------------------------------------------
-# 2.6 Prepare a non-spatial GPS table for the temporal join ----
-#'------------------------------------------------------------------------------
-
+# 2.5 Prepare a non-spatial GPS table for the temporal join ----
 gps_points <- data.table::data.table(
   
   gps_row_id =
@@ -664,15 +593,12 @@ data.table::setkey(
 )
 
 
-#------------------------------------------------------------------------------
-# Assign to each GPS point the closest ACC behaviour in time
-#------------------------------------------------------------------------------
 
+# Assign to each GPS point the closest ACC behaviour in time
 max_assignment_gap_min <- 60
 
 
 # Ensure that timestamps are POSIXct and use the same time zone.
-
 gps_points[
   ,
   gps_timestamp :=
@@ -693,7 +619,6 @@ acc_points[
 
 
 # Use numeric timestamps for the rolling joins.
-
 gps_points[
   ,
   join_time :=
@@ -878,7 +803,6 @@ gps_acc_candidates <- data.table::rbindlist(
 
 
 # Calculate the absolute temporal distance.
-
 gps_acc_candidates[
   ,
   abs_time_diff_min :=
@@ -895,7 +819,6 @@ gps_acc_candidates[
 
 
 # Missing ACC candidates must be ranked after valid candidates.
-
 gps_acc_candidates[
   ,
   temporal_distance_order :=
@@ -1331,9 +1254,7 @@ print(
 
 
 
-#' -----------------------------------------------------------------------------
-#' Step 3 : reclassify behaviors
-#' 
+#' ----------------------------------------------------------------------------- Step 3 : reclassify behaviors ----
 #' **Philosophy**: we group certain behavioural categories together in order 
 #' to ensure significantly large classes of behaviors to calculate transition 
 #' probability later. We focus on three groups : feeding, resting, flight. 
@@ -1734,9 +1655,7 @@ saveRDS(
 
 
 
-#' -----------------------------------------------------------------------------
-#' Step 4 : creation of two temporally regular dataset
-#' 
+# ----------------------------------------------------------------------------- Step 4 : creation of two temporally regular dataset
 #' **Steps:**
 #' (1) inspect raw GPS sampling intervals;
 #' (2) create one high-resolution dataset at 20 min;
@@ -2291,285 +2210,5 @@ saveRDS(
     output_dir,
     "GE_60_min_thinned_behavior_assigned2.rds"
   ),
-  compress = "gzip"
-)
-
-
-
-
-#'------------------------------------------------------------------------------
-#' Step 5 : extract human footprint index around GPS locations
-#' 
-#' **Extract:**
-#' - HFI value of the pixel containing the GPS point
-#' - mean, maximum, and 75th percentile HFI within 500 m
-#' - mean, maximum, and 75th percentile HFI within 1000 m
-library(terra)
-
-comparaison <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/GE_60_min_thinned_behavior_assigned.rds")
-regular_60_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/GE_60_min_thinned_behavior_assigned2.rds")
-terra::terraOptions(threads = 5)
-
-# Function for HFI extraction
-terra::terraOptions(threads = 5)
-
-# Function for HFI extraction
-extract_hfi <- function(df_sf,
-                        raster = human_footprint,
-                        buffers_m = c(500, 1000)) {
-  
-  # Keep attribute table without geometry
-  df <- as.data.frame(sf::st_drop_geometry(df_sf))
-  
-  # Create terra points directly from sf geometry
-  pts <- terra::vect(df_sf)
-  
-  # Project points to raster CRS if needed
-  pts_r <- terra::project(pts, terra::crs(raster))
-  
-  # Extract HFI value at GPS point
-  df$hfi_point <- terra::extract(
-    raster,
-    pts_r,
-    ID = FALSE
-  )[[1]]
-  
-  # Extract HFI statistics in buffers
-  for (r in buffers_m) {
-    
-    # Create buffers in the metric CRS of the GPS data, EPSG:3035
-    buf <- terra::buffer(pts, width = r)
-    
-    # Project buffers to raster CRS
-    buf_r <- terra::project(buf, terra::crs(raster))
-    
-    # Mean HFI inside buffer
-    df[[paste0("hfi_mean_", r, "m")]] <- terra::extract(
-      raster,
-      buf_r,
-      fun = mean,
-      na.rm = TRUE,
-      ID = FALSE
-    )[[1]]
-    
-    # Third quartile of HFI inside buffer
-    df[[paste0("hfi_q75_", r, "m")]] <- terra::extract(
-      raster,
-      buf_r,
-      fun = function(x, ...) {
-        stats::quantile(
-          x,
-          probs = 0.90,
-          na.rm = TRUE,
-          names = FALSE
-        )
-      },
-      ID = FALSE
-    )[[1]]
-    
-    # Third quartile of HFI inside buffer
-    df[[paste0("hfi_q75_", r, "m")]] <- terra::extract(
-      raster,
-      buf_r,
-      fun = function(x, ...) {
-        stats::quantile(
-          x,
-          probs = 0.75,
-          na.rm = TRUE,
-          names = FALSE
-        )
-      },
-      ID = FALSE
-    )[[1]]
-  }
-  
-  df
-}
-
-regular_20_hfi <- extract_hfi(regular_20_sf)
-regular_60_hfi <- extract_hfi(regular_60_sf)
-
-# Controls
-hfi_columns <- c(
-  "hfi_point",
-  "hfi_mean_500m",
-  "hfi_q75_500m",
-  "hfi_mean_1000m",
-  "hfi_q75_1000m", 
-  "hfi_q90_1000m",
-  "hfi_q90_500m"
-)
-
-regular_20_hfi[, hfi_columns] |>
-  summary()
-
-regular_60_hfi[, hfi_columns] |>
-  summary()
-
-# clean 
-
-
-regular_60_hfi_clean <- regular_60_hfi
-
-
-# Harmonise individual identifier.
-
-if (
-  !"individual.local.identifier" %in%
-  names(regular_60_hfi_clean) &&
-  "individual_local_identifier" %in%
-  names(regular_60_hfi_clean)
-) {
-  regular_60_hfi_clean <-
-    regular_60_hfi_clean %>%
-    dplyr::rename(
-      individual.local.identifier =
-        individual_local_identifier
-    )
-}
-
-
-# Harmonise ground-speed name.
-
-if (
-  !"ground_speed" %in%
-  names(regular_60_hfi_clean) &&
-  "ground.speed" %in%
-  names(regular_60_hfi_clean)
-) {
-  regular_60_hfi_clean <-
-    regular_60_hfi_clean %>%
-    dplyr::rename(
-      ground_speed =
-        ground.speed
-    )
-}
-
-
-# Harmonise height name.
-
-if (
-  !"height_above_ellipsoid" %in%
-  names(regular_60_hfi_clean) &&
-  "height.above.ellipsoid" %in%
-  names(regular_60_hfi_clean)
-) {
-  regular_60_hfi_clean <-
-    regular_60_hfi_clean %>%
-    dplyr::rename(
-      height_above_ellipsoid =
-        height.above.ellipsoid
-    )
-}
-
-
-# Harmonise timestamp.
-
-if (
-  !"timestamp" %in%
-  names(regular_60_hfi_clean) &&
-  "gps_timestamp" %in%
-  names(regular_60_hfi_clean)
-) {
-  regular_60_hfi_clean <-
-    regular_60_hfi_clean %>%
-    dplyr::rename(
-      timestamp =
-        gps_timestamp
-    )
-}
-
-columns_to_keep_60 <- c(
-  "sensor_type_id",
-  "individual.local.identifier",
-  "eobs_horizontal_accuracy_estimate",
-  "eobs_speed_accuracy_estimate",
-  "eobs_type_of_fix",
-  "gps_dop",
-  "gps_satellite_count",
-  "ground_speed",
-  "height_above_ellipsoid",
-  "timestamp",
-  "lon",
-  "lat",
-  "dist.traveled",
-  "rf8fitted",
-  "behavior_assignment_method",
-  "behavior_base",
-  "behavior_reclassified",
-  "behavior_reclassification_rule",
-  "burst_n", "burst_id",
-  "row_in_burst",
-  "hfi_point",
-  "hfi_mean_500m",
-  "hfi_q75_500m",
-  "hfi_mean_1000m",
-  "hfi_q75_1000m"
-)
-
-missing_final_columns_60 <- setdiff(
-  columns_to_keep_60,
-  names(regular_60_hfi_clean)
-)
-
-print(
-  missing_final_columns_60
-)
-
-if (
-  length(
-    missing_final_columns_60
-  ) > 0L
-) {
-  stop(
-    paste0(
-      "Missing required output columns: ",
-      paste(
-        missing_final_columns_60,
-        collapse = ", "
-      )
-    )
-  )
-}
-
-
-regular_60_hfi_clean <-
-  regular_60_hfi_clean %>%
-  dplyr::select(
-    dplyr::all_of(
-      columns_to_keep_60
-    )
-  )
-
-
-hfi_columns <- c(
-  "hfi_point",
-  "hfi_mean_500m",
-  "hfi_q75_500m",
-  "hfi_mean_1000m",
-  "hfi_q75_1000m"
-)
-
-
-summary(
-  regular_60_hfi_clean[
-    ,
-    hfi_columns,
-    drop = FALSE
-  ]
-)
-
-
-
-# Save outputs
-saveRDS(
-  regular_20_hfi,
-  file.path(output_dir, "GE_20_min_thinned_behavior_assigned_hfi.rds"),
-  compress = "gzip"
-)
-
-saveRDS(
-  regular_60_hfi_clean,
-  file.path(output_dir, "GE_60_min_thinned_behavior_assigned_hfi.rds"),
   compress = "gzip"
 )
