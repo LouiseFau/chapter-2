@@ -6,11 +6,12 @@
 #' Info : this script follow the Extract_covariates.R script where covariates are
 #' extracted below each location and within two buffers. 
 #' 
-# Main steps: ----
+# Main steps:
 #' (1) prepare the dataset:
 #'     (i) calculate elapsed duration in the current behavioural state;
 #'     (ii) construct the transition matrix and retain aerial-origin transitions;
-#'     (iii) remove incomplete observations and document individual exclusions.
+#'     (iii) remove incomplete observations and document individual exclusions
+#'     (iv) attribute a weight to individuals based on their nbr of transitions.
 #'
 #' (2) define the behavioural backbone model:
 #'     (i) retain the diel cosinor and individual random intercept;
@@ -27,13 +28,9 @@
 #' (4) identify several HFI metrics:
 #'     (i) compile pearson correlation coefficient btw hfi metrics and retained covariates
 #'     (ii) compile vif amongst group of covariates for the models defined in step 5
-#'     
-#' (5) fit candidates HFI models
-#' (6) diagnose pseudo residuals
-#' (7) fit model with variable HFI slope per individuals   
 
 
-# library ----
+# library
 library(dplyr)
 library(tidyr)
 library(tibble)
@@ -42,11 +39,11 @@ library(ggplot2)
 library(mgcv)
 
 
-# data ----
+# data
 GE_60_min_covariates_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_60_min_covariates_hfi.rds")
 
 
-# parameters ----
+# parameters
 state_levels <- c("aerial", "terrestrial")
 transition_levels <- c("aerial_to_aerial", "aerial_to_terrestrial", "terrestrial_to_aerial", "terrestrial_to_terrestrial")
 hfi_candidates_60 <- c("hfi_point", "hfi_mean_500m", "hfi_q75_500m", "hfi_mean_1000m", "hfi_q75_1000m", "hfi_q90_500m","hfi_q90_1000m")
@@ -63,8 +60,7 @@ age_k <- 5
 duration_k <- 6
 
 
-#------------------------------------------------------------------------------
-# STEP 1: prepare dataset ----
+#------------------------------------------------------------------------------ STEP 1: prepare dataset ----
 #' **Steps:**
 #' (i) calculate elapsed time in current behavioural state;
 #' (ii) build transition dataset and transition matrix;
@@ -194,134 +190,100 @@ transition_probability_matrix_60 <- prop.table(
 )
 
 print(transition_count_matrix_60)
-print(
-  round(
-    transition_probability_matrix_60,
-    digits = 4
-  )
-)
-
-# Rows represent departure states and columns represent arrival states.
-# Each row of transition_probability_matrix_60 should sum to one.
-
+print(round(transition_probability_matrix_60,digits = 4))
+#                              Behavior_to
+# behavior_from aerial terrestrial       aerial terrestrial
+# aerial        4271        6658         0.3908      0.6092
+# terrestrial   6520       31274         0.1725      0.8275
 
 # 1.4 Retain only transitions originating from aerial state ----
 aerial_transitions_raw_60 <- transitions_60 %>%
   dplyr::filter(
-    behavior_from == "aerial"
-  ) %>%
+    behavior_from == "aerial") %>%
   dplyr::mutate(
-    
-    # Response variable:
     # 1 = remain aerial
     # 0 = transition to terrestrial
-    remain_aerial = as.integer(
-      behavior_to == "aerial"
-    ),
-    
-    aerial_duration_min = state_duration_min
-  )
-
+    remain_aerial =
+      as.integer(
+        behavior_to == "aerial"),
+    aerial_duration_min =state_duration_min)
 
 # 1.5 Inspect number of aerial transitions per individual ----
 transitions_by_individual_60 <- aerial_transitions_raw_60 %>%
-  dplyr::group_by(
-    individual.local.identifier
-  ) %>%
+  dplyr::group_by(individual.local.identifier) %>%
   dplyr::summarise(
     n_aerial_transitions = dplyr::n(),
-    
-    n_aerial_to_aerial = sum(
-      remain_aerial == 1L
-    ),
-    
-    n_aerial_to_terrestrial = sum(
-      remain_aerial == 0L
-    ),
-    
-    n_bursts = dplyr::n_distinct(
-      burst_id
-    ),
-    
-    .groups = "drop"
-  ) %>%
-  dplyr::arrange(
-    n_aerial_transitions
-  )
+    n_aerial_to_aerial = sum(remain_aerial == 1L),
+    n_aerial_to_terrestrial = sum(remain_aerial == 0L),
+    n_bursts = dplyr::n_distinct(burst_id),
+    .groups = "drop") %>%
+  dplyr::arrange(n_aerial_transitions)
 
 print(transitions_by_individual_60,n = Inf)
-
 
 # 1.6 Remove selected individuals ----
 # We remove individuals with less than 30 transitions, we only have 62 individuals.
 individuals_to_remove <- c("Langgries21 (eobs 7586)","Almen18 (eobs 5861)","Untersberg21 (eobs 7501)","Schreital22 (eobs 10537)") # for 60 min dataset
 
-aerial_transitions_60 <- aerial_transitions_raw_60 %>%
-  dplyr::filter(
-    !individual.local.identifier %in%
-      individuals_to_remove
+# Give an equal weight to each individuals
+aerial_transitions_60 <- aerial_transitions_raw_60 %>% dplyr::filter(!individual.local.identifier %in%individuals_to_remove
   ) %>%
   dplyr::mutate(
-    individual_id = factor(
-      individual.local.identifier
-    )
-  ) %>%
+    individual_id =
+      factor(
+        individual.local.identifier
+      )) %>%
   tidyr::drop_na(
     individual_id,
     burst_id,
     remain_aerial,
     dplyr::all_of(
-      required_numeric_variables_60
-    )
-  ) %>%
+      required_numeric_variables_60)) %>%
   dplyr::filter(
     dplyr::if_all(
       dplyr::all_of(
         required_numeric_variables_60
       ),
-      is.finite
-    )
+      is.finite)
   ) %>%
   dplyr::mutate(
-    individual_id = droplevels(
-      individual_id
-    )
-  )
-
-
-final_dataset_summary_60 <- aerial_transitions_60 %>%
-  dplyr::summarise(
-    n_observations =
+    individual_id =
+      droplevels(
+        individual_id)) %>%
+  
+  # Number of retained transitions for each individual
+  dplyr::group_by(
+    individual_id
+  ) %>%
+  dplyr::mutate(
+    n_transitions_individual =
       dplyr::n(),
     
-    n_individuals =
-      dplyr::n_distinct(
-        individual_id
-      ),
-    
-    n_bursts =
-      dplyr::n_distinct(
-        burst_id
-      ),
-    
-    n_remain_aerial =
-      sum(
-        remain_aerial == 1L
-      ),
-    
-    n_transition_terrestrial =
-      sum(
-        remain_aerial == 0L
-      ),
-    
-    proportion_remain_aerial =
+    individual_weight_raw =
+      1 /
+      n_transitions_individual
+  ) %>%
+  dplyr::ungroup() %>%
+  
+  # Normalize weights so their overall mean equals 1
+  dplyr::mutate(
+    individual_weight =
+      individual_weight_raw /
       mean(
-        remain_aerial
-      )
-  )
+        individual_weight_raw))
+
+# Summary of the final dataset
+final_dataset_summary_60 <- aerial_transitions_60 %>%
+  dplyr::summarise(n_observations = dplyr::n(),
+    n_individuals =dplyr::n_distinct(individual_id),
+    n_bursts =dplyr::n_distinct(burst_id),
+    n_remain_aerial = sum(remain_aerial == 1L),
+    n_transition_terrestrial = sum( remain_aerial == 0L),
+    proportion_remain_aerial = mean(remain_aerial))
 
 print(final_dataset_summary_60)
-
+# n_observations n_individuals n_bursts n_remain_aerial n_transition_terrestrial proportion_remain_aerial
+# 10872            62            4875            4244                     6628                  0.390
 
 
 
@@ -339,21 +301,10 @@ print(final_dataset_summary_60)
 # 2.1 Prepare the common backbone dataset ----
 # All candidate models are fitted to exactly the same observations.
 backbone_data_60 <- aerial_transitions_60 %>%
-  dplyr::filter(
-    !is.na(individual_id),
-    dplyr::if_all(
-      dplyr::all_of(backbone_variables_60),
-      is.finite
-    )
-  ) %>%
-  dplyr::mutate(
-    individual_id = droplevels(
-      factor(individual_id)
-    ),
-    
-    aerial_duration_h =
-      aerial_duration_min / 60
-  )
+  dplyr::filter( !is.na(individual_id),
+    dplyr::if_all( dplyr::all_of(backbone_variables_60), is.finite)) %>%
+  dplyr::mutate(individual_id = droplevels(factor(individual_id)),
+    aerial_duration_h = aerial_duration_min / 60)
 
 
 # 2.2 Centre and standardize age and elapsed aerial duration ----
@@ -364,36 +315,15 @@ duration_scale_60 <- stats::sd(backbone_data_60$aerial_duration_h)
 
 backbone_data_60 <- backbone_data_60 %>%
   dplyr::mutate(
-    age_z = (
-      age_since_emig_weeks -
-        age_center_60
-    ) / age_scale_60,
-    
-    duration_z = (
-      aerial_duration_h -
-        duration_center_60
-    ) / duration_scale_60,
-    
+    age_z = (age_since_emig_weeks - age_center_60) / age_scale_60,
+    duration_z = (aerial_duration_h - duration_center_60) / duration_scale_60,
     age_z2 = age_z^2,
-    duration_z2 = duration_z^2
-  )
+    duration_z2 = duration_z^2)
 
 backbone_scaling_60 <- tibble::tibble(
-  variable = c(
-    "age_since_emig_weeks",
-    "aerial_duration_h"
-  ),
-  
-  center = c(
-    age_center_60,
-    duration_center_60
-  ),
-  
-  scale = c(
-    age_scale_60,
-    duration_scale_60
-  )
-)
+  variable = c("age_since_emig_weeks","aerial_duration_h"),
+  center = c(age_center_60,duration_center_60),
+  scale = c(age_scale_60,duration_scale_60))
 
 print(backbone_scaling_60)
 
@@ -402,81 +332,37 @@ print(backbone_scaling_60)
 # Quadratic forms always contain both the linear and squared terms.
 # Shrinkage cubic splines ("cs") can be penalized towards a simple or
 # effectively absent relationship.
-age_terms_60 <- list(
-  linear =
-    "age_z",
-  
-  quadratic = c(
-    "age_z",
-    "age_z2"
-  ),
-  
-  smooth = paste0(
-    "s(age_z, bs = 'cs', k = ",
-    age_k,
-    ")"
-  )
-)
-
+age_terms_60 <- list(linear ="age_z",
+  quadratic = c("age_z","age_z2"),
+  smooth = paste0("s(age_z, bs = 'cs', k = ",age_k,")"))
 duration_terms_60 <- list(
-  linear =
-    "duration_z",
-  
-  quadratic = c(
-    "duration_z",
-    "duration_z2"
-  ),
-  
-  smooth = paste0(
-    "s(duration_z, bs = 'cs', k = ",
-    duration_k,
-    ")"
-  )
-)
+  linear ="duration_z",
+  quadratic = c("duration_z","duration_z2"),
+  smooth = paste0("s(duration_z, bs = 'cs', k = ",duration_k,")"))
 
 
 # 2.4 Define the candidate backbone model set ----
 backbone_model_metadata_60 <- tidyr::expand_grid(
-  age_form = c(
-    "linear",
-    "quadratic",
-    "smooth"
-  ),
-  
-  duration_form = c(
-    "linear",
-    "quadratic",
-    "smooth"
-  )
-) %>%
-  dplyr::mutate(
-    model = paste(
-      "age",
-      age_form,
-      "duration",
-      duration_form,
-      sep = "_"
-    ),
+  age_form = c("linear","quadratic","smooth"),
+  duration_form = c("linear","quadratic","smooth")) %>%
+  dplyr::mutate( model = paste("age",age_form,"duration",duration_form,sep = "_"),
     
     # This ranking implements the a priori preference for simpler structures.
     age_complexity = dplyr::recode(
       age_form,
       linear = 1L,
       quadratic = 2L,
-      smooth = 3L
-    ),
+      smooth = 3L),
     
     duration_complexity = dplyr::recode(
       duration_form,
       linear = 1L,
       quadratic = 2L,
-      smooth = 3L
-    ),
+      smooth = 3L),
     
     complexity_score =
       age_complexity +
-      duration_complexity
-  )
+      duration_complexity)
 
 
 # 2.5 Build candidate model formulas ----
@@ -485,8 +371,7 @@ backbone_model_metadata_60 <- tidyr::expand_grid(
 backbone_formulas_60 <- stats::setNames(
   lapply(
     seq_len(
-      nrow(backbone_model_metadata_60)
-    ),
+      nrow(backbone_model_metadata_60)),
     function(i) {
       
       model_information <-
@@ -518,8 +403,7 @@ backbone_formulas_60 <- stats::setNames(
       )
     }
   ),
-  backbone_model_metadata_60$model
-)
+  backbone_model_metadata_60$model)
 
 
 # 2.6 Fit candidate backbone models ----
@@ -547,20 +431,16 @@ backbone_models_60 <- stats::setNames(
       )
     }
   ),
-  names(backbone_formulas_60)
-)
+  names(backbone_formulas_60))
 
 
 # 2.7 Compare candidate backbone models ----
 backbone_model_comparison_60 <- dplyr::bind_rows(
-  lapply(
-    names(backbone_models_60),
+  lapply(names(backbone_models_60),
     function(model_name) {
       
       fitted_model <-
-        backbone_models_60[[
-          model_name
-        ]]
+        backbone_models_60[[model_name]]
       
       model_information <-
         backbone_model_metadata_60 %>%
@@ -636,24 +516,13 @@ backbone_model_comparison_60 <- dplyr::bind_rows(
     akaike_weight =
       exp(-0.5 * delta_AIC) /
       sum(
-        exp(-0.5 * delta_AIC)
-      ),
+        exp(-0.5 * delta_AIC)),
     
     similar_support =
       delta_AIC <=
-      delta_aic_threshold
-  )
+      delta_aic_threshold)
 
 print(backbone_model_comparison_60,n = Inf)
-
-# Inspect:
-# - n_observations: must be identical among all models;
-# - AIC: lower values indicate stronger relative support;
-# - delta_AIC <= 4: models are retained as reasonably supported;
-# - df: effective model complexity, including smooth complexity;
-# - deviance_explained: descriptive fit of the complete model;
-# - converged: expected TRUE;
-# - convergence_message: expected to indicate full convergence.
 
 
 # 2.8 Retain the most parsimonious supported structure ----
@@ -674,32 +543,27 @@ supported_backbone_models_60 <-
 print(supported_backbone_models_60,n = Inf)
 # we take the first model even though the AIC is higher
 
-provisional_backbone_name_60 <-
-  supported_backbone_models_60 %>%
+provisional_backbone_name_60 <- supported_backbone_models_60 %>%
   dplyr::slice(1) %>%
   dplyr::pull(model)
 
 provisional_backbone_information_60 <-
   backbone_model_metadata_60 %>%
   dplyr::filter(
-    model ==
-      provisional_backbone_name_60)
+    model == provisional_backbone_name_60)
 
-selected_age_form_60 <-
-  provisional_backbone_information_60$
-  age_form
+selected_age_form_60 <- provisional_backbone_information_60$age_form
 
-selected_duration_form_60 <-
-  provisional_backbone_information_60$
-  duration_form
+selected_duration_form_60 <- provisional_backbone_information_60$duration_form
 
-provisional_backbone_model_ml_60 <-
-  backbone_models_60[[
-    provisional_backbone_name_60
-  ]]
+provisional_backbone_model_ml_60 <-backbone_models_60[[provisional_backbone_name_60]]
 
-print(provisional_backbone_name_60)
+print(provisional_backbone_name_60) # "age_linear_duration_quadratic"
 print(summary(provisional_backbone_model_ml_60))
+#' Formula: remain_aerial ~ cos_diel + sin_time + age_z + duration_z + duration_z2 + 
+#' s(individual_id, bs = "re")
+
+
 
 
 # ------------------------------------------------------------------------------STEP 3 : identify potential cofounders ----
@@ -709,64 +573,38 @@ print(summary(provisional_backbone_model_ml_60))
 #' (iii) reduce strongly correlated variables using biological justification
 #'       rather than automatic selection.
 
-
 # Calculate Pearson correlations among environmental covariates
 correlation_data_60 <- aerial_transitions_60 %>%
   dplyr::select(
     dplyr::all_of(
-      environmental_covariates_60
-    )
-  )
+      environmental_covariates_60))
 
 correlation_matrix_60 <- stats::cor(correlation_data_60,method = "pearson",use = "complete.obs")
 
-#------------------------------------------------------------------------------- Visualisation n°1 : Pearson correlation matrix
-corrplot::corrplot(
-  correlation_matrix_60,
-  
+#------------------------------------------------------------------------------- VISUALISATION n°1 : Pearson correlation matrix ----
+corrplot::corrplot(correlation_matrix_60,
   method = "color",
   type = "lower",
   order = "original",
-  
-  col = corrplot::COL2(
-    "RdBu",
-    200
-  ),
-  
-  col.lim = c(
-    -1,
-    1
-  ),
-  
+  col = corrplot::COL2("RdBu",200),
+  col.lim = c(-1,1),
   diag = FALSE,
-  
   addCoef.col = "black",
   number.digits = 2,
   number.cex = 0.6,
-  
   tl.col = "black",
   tl.cex = 0.6,
   tl.srt = 45,
-  
   cl.cex = 0.8,
   addgrid.col = "white",
-  
-  title =
-    "Pearson correlations among candidate environmental confounders",
-  
-  mar = c(
-    0,
-    0,
-    3,
-    0
-  )
-)
+  title ="Pearson correlations among candidate environmental confounders",
+  mar = c(0,0,3,0))
 #------------------------------------------------------------------------------- (end) Visualisation n°1 : Pearson correlation matrix
 
 #' we remove slope due to its high correlation with ruggedness and lower 
 #' explanation of the topographic complexity 
 #' we remove as well proportion of rocky terrain for its association with 
-#' elevation and limited biological interpret ability
+#' elevation and limited biological interpretability
 
 
 
@@ -778,9 +616,10 @@ corrplot::corrplot(
 
 
 
-# ------------------------------------------------------------------------------ Step 4 : identify several HFI metrics ----
+# ------------------------------------------------------------------------------ STEP 4 : identify several HFI metrics ----
 #' **Steps:**
-#' (i) compile support per hfi class;
+#' (i) evaluate the support per hfi class (range of HFI used by individuals per
+#' selected metric of HFI and number of individuals in the extreme range of HFI)
 #' (ii) compile VIF for retained HFI metrics and their covariate groups.
 #' 
 #' Pearson correlations between HFI metrics and retained environmental
@@ -808,213 +647,76 @@ hfi_support_long_60 <- aerial_transitions_60 %>%
     burst_id,
     remain_aerial,
     dplyr::all_of(
-      hfi_candidates_60
-    )
-  ) %>%
+      hfi_candidates_60)) %>%
   tidyr::pivot_longer(
-    cols =
-      dplyr::all_of(
-        hfi_candidates_60
-      ),
-    
-    names_to =
-      "hfi_variable",
-    
-    values_to =
-      "hfi_value"
-  ) %>%
-  dplyr::mutate(
-    hfi_variable = factor(
-      hfi_variable,
-      levels =
-        hfi_candidates_60
-    )
-  )
-
+    cols =dplyr::all_of(hfi_candidates_60),
+    names_to ="hfi_variable",
+    values_to ="hfi_value") %>%
+  dplyr::mutate(hfi_variable = factor(hfi_variable,
+      levels =hfi_candidates_60))
 
 # 4.1.2 Compile the empirical range of each HFI metric ----
 hfi_thresholds_60 <- hfi_support_long_60 %>%
-  dplyr::group_by(
-    hfi_variable
-  ) %>%
-  dplyr::summarise(
-    hfi_min =
-      min(hfi_value),
-    
-    hfi_q05 =
-      as.numeric(
-        stats::quantile(
-          hfi_value,
-          probs = 0.05
-        )
-      ),
-    
-    hfi_median =
-      stats::median(
-        hfi_value
-      ),
-    
-    hfi_q95 =
-      as.numeric(
-        stats::quantile(
-          hfi_value,
-          probs = 0.95
-        )
-      ),
-    
-    hfi_max =
-      max(hfi_value),
-    
-    .groups =
-      "drop"
-  )
+  dplyr::group_by(hfi_variable) %>%
+  dplyr::summarise(hfi_min =min(hfi_value),
+    hfi_q05 =as.numeric(stats::quantile(hfi_value,probs = 0.05)),
+    hfi_median =stats::median(hfi_value),
+    hfi_q95 =as.numeric(stats::quantile(hfi_value,probs = 0.95)),
+    hfi_max =max(hfi_value),.groups ="drop")
 
 print(hfi_thresholds_60,n = Inf)
-
 
 # 4.1.3 Count observations, individuals and bursts across HFI classes ----
 hfi_class_support_60 <- hfi_support_long_60 %>%
   dplyr::mutate(
     hfi_class = cut(
       hfi_value,
-      breaks =
-        hfi_classes_60,
-      labels =
-        hfi_labels_60,
-      include.lowest =
-        TRUE,
-      right =
-        TRUE
-    )
-  ) %>%
-  dplyr::group_by(
-    hfi_variable,
-    hfi_class
-  ) %>%
-  dplyr::summarise(
-    n_observations =
-      dplyr::n(),
-    
-    n_individuals =
-      dplyr::n_distinct(
-        individual_id
-      ),
-    
-    n_bursts =
-      dplyr::n_distinct(
-        burst_id
-      ),
-    
-    n_remain_aerial =
-      sum(
-        remain_aerial == 1L
-      ),
-    
-    n_transition_terrestrial =
-      sum(
-        remain_aerial == 0L
-      ),
-    
-    proportion_remain_aerial =
-      mean(
-        remain_aerial
-      ),
-    
-    .groups =
-      "drop"
-  ) %>%
-  dplyr::arrange(
-    hfi_variable,
-    hfi_class
-  )
+      breaks =hfi_classes_60,
+      labels =hfi_labels_60,
+      include.lowest =TRUE,
+      right =TRUE)) %>%
+  dplyr::group_by(hfi_variable,hfi_class) %>%
+  dplyr::summarise(n_observations =dplyr::n(),
+    n_individuals =dplyr::n_distinct(individual_id),
+    n_bursts =dplyr::n_distinct(burst_id),
+    n_remain_aerial =sum(remain_aerial == 1L),
+    n_transition_terrestrial =sum(remain_aerial == 0L),
+    proportion_remain_aerial = mean(remain_aerial),
+    .groups ="drop") %>%
+  dplyr::arrange(hfi_variable,hfi_class)
 
 print(hfi_class_support_60,n = Inf)
 
-
 # 4.1.4 Prepare individual and transition counts for one plot ----
 hfi_class_plot_data_60 <- hfi_class_support_60 %>%
-  dplyr::select(
-    hfi_variable,
-    hfi_class,
-    n_individuals,
-    n_observations
-  ) %>%
-  tidyr::pivot_longer(
-    cols = c(
-      n_individuals,
-      n_observations
-    ),
-    
-    names_to =
-      "support_measure",
-    
-    values_to =
-      "count"
-  ) %>%
+  dplyr::select(hfi_variable,hfi_class,n_individuals,n_observations) %>%
+  tidyr::pivot_longer(cols = c(n_individuals,n_observations),
+    names_to ="support_measure",
+    values_to ="count") %>%
   dplyr::mutate(
     support_measure = dplyr::recode(
       support_measure,
       n_individuals =
         "Number of individuals",
       n_observations =
-        "Number of aerial-origin transitions"
-    )
-  )
+        "Number of aerial-origin transitions"))
+print(hfi_class_plot_data_60, n = Inf)
 
-#------------------------------------------------------------------------------- Visualisation n°2 : empirical support
+#------------------------------------------------------------------------------- VISUALISATION n°2 : empirical support ----
 hfi_support_comparison_plot_60 <- hfi_class_plot_data_60 %>%
-  ggplot2::ggplot(
-    ggplot2::aes(
-      x =
-        hfi_class,
-      y =
-        count,
-      group =
-        hfi_variable,
-      color =
-        hfi_variable
-    )
-  ) +
-  ggplot2::geom_line(
-    linewidth = 0.9
-  ) +
-  ggplot2::geom_point(
-    size = 2.5
-  ) +
-  ggplot2::facet_wrap(
-    ~ support_measure,
-    ncol = 1,
-    scales = "free_y"
-  ) +
-  ggplot2::labs(
-    x =
-      "Absolute HFI class",
-    y =
-      "Count",
-    color =
-      "HFI metric",
-    title =
-      "Empirical support across HFI classes",
-    subtitle =
-      "Comparison of individual and transition support among candidate HFI metrics"
-  ) +
+  ggplot2::ggplot(ggplot2::aes(x =hfi_class,y =count,group =hfi_variable,color =hfi_variable)) +
+  ggplot2::geom_line(linewidth = 0.9) +
+  ggplot2::geom_point(size = 2.5) +
+  ggplot2::facet_wrap(~ support_measure,ncol = 1,scales = "free_y") +
+  ggplot2::labs(x ="Absolute HFI class",y ="Count",color ="HFI metric", title = "Empirical support across HFI classes",
+    subtitle ="Comparison of individual and transition support among candidate HFI metrics") +
   ggplot2::theme_bw() +
-  ggplot2::theme(
-    axis.text.x =
-      ggplot2::element_text(
-        angle = 45,
-        hjust = 1
-      ),
-    
-    legend.position =
-      "right"
-  )
+  ggplot2::theme(axis.text.x =ggplot2::element_text(angle = 45,hjust = 1),
+    legend.position ="right")
 
-print(
-  hfi_support_comparison_plot_60
-)
+print(hfi_support_comparison_plot_60)
 #------------------------------------------------------------------------------- (end) Visualisation n°2 : empirical support
-selected_hfi_candidates_60 <- c("hfi_mean_1000m","hfi_q75_1000m","hfi_q75_500m")
+selected_hfi_candidates_60 <- c("hfi_mean_1000m","hfi_q90_1000m","hfi_q75_500m")
 
 
 # 4.2 Compile VIF for HFI candidate models ----
@@ -1025,29 +727,10 @@ selected_hfi_candidates_60 <- c("hfi_mean_1000m","hfi_q75_1000m","hfi_q75_500m")
 
 # 4.2.1 Define the candidate environmental model structures ----
 vif_model_structures_60 <- list(
-  
-  altitudinal_gradient = c(
-    "dem_elevation"
-  ),
-  
-  topographic_complexity = c(
-    "ruggedness_100m",
-    "distance_to_ridgeline_100m", 
-    "dem_elevation"
-  ),
-  
-  habitat_refuge = c(
-    "prop_forest_5cells",
-    "ruggedness_100m",
-    "dem_elevation"
-  ),
-  
-  open_habitat = c(
-    "prop_low_vegetation_5cells",
-    "dem_elevation"
-  )
-)
-
+  altitudinal_gradient = c("dem_elevation"),
+  topographic_complexity = c("ruggedness_100m","distance_to_ridgeline_100m", "dem_elevation"),
+  habitat_refuge = c("prop_forest_5cells","ruggedness_100m","dem_elevation"),
+  open_habitat = c("prop_low_vegetation_5cells","dem_elevation"))
 
 # 4.2.2 Define the VIF calculation function ----
 # For each predictor:
@@ -1061,31 +744,15 @@ calculate_vif_60 <- function(data, predictors) {
       predictors,
       function(variable_name) {
         
-        other_predictors <- setdiff(
-          predictors,
-          variable_name
-        )
+        other_predictors <- setdiff(predictors,variable_name)
         
         auxiliary_model <- stats::lm(
-          formula = stats::reformulate(
-            termlabels = other_predictors,
-            response = variable_name
-          ),
-          data = data
-        )
+          formula = stats::reformulate(termlabels = other_predictors,response = variable_name),
+          data = data)
         
         tibble::tibble(
           variable = variable_name,
-          vif = 1 / (
-            1 -
-              summary(auxiliary_model)$r.squared
-          )
-        )
-      }
-    )
-  )
-}
-
+          vif = 1 / (1 -summary(auxiliary_model)$r.squared))}))}
 
 # 4.2.3 Calculate detailed VIF values for each HFI metric x model structure ----
 vif_detailed_results_60 <- dplyr::bind_rows(
@@ -1094,182 +761,85 @@ vif_detailed_results_60 <- dplyr::bind_rows(
     function(hfi_name) {
       
       dplyr::bind_rows(
-        lapply(
-          names(vif_model_structures_60),
-          function(model_name) {
+        lapply(names(vif_model_structures_60), function(model_name) {
             
-            model_predictors <- c(
-              hfi_name,
-              vif_model_structures_60[[model_name]]
-            )
+            model_predictors <- c(hfi_name,vif_model_structures_60[[model_name]])
             
             calculate_vif_60(
               data = aerial_transitions_60,
-              predictors = model_predictors
-            ) %>%
+              predictors = model_predictors) %>%
               dplyr::mutate(
                 hfi_variable = hfi_name,
                 model_structure = model_name,
                 predictor_role = dplyr::if_else(
                   variable == hfi_name,
                   "HFI",
-                  "control"
-                )
-              )
-          }
-        )
-      )
-    }
-  )
-) %>%
-  dplyr::select(
-    hfi_variable,
-    model_structure,
-    variable,
-    predictor_role,
-    vif
-  ) %>%
-  dplyr::arrange(
-    hfi_variable,
-    model_structure,
-    dplyr::desc(vif)
-  )
+                  "control"))}))})) %>%
+  dplyr::select(hfi_variable,model_structure,variable,predictor_role,vif) %>%
+  dplyr::arrange(hfi_variable,model_structure,dplyr::desc(vif))
 
 # 4.2.4 Summarise VIF at the model level ----
 vif_summary_results_60 <- vif_detailed_results_60 %>%
   dplyr::group_by(
     hfi_variable,
-    model_structure
-  ) %>%
+    model_structure) %>%
   dplyr::summarise(
-    hfi_vif = vif[
-      predictor_role == "HFI"
-    ][1],
-    
+    hfi_vif = vif[predictor_role == "HFI"][1],
     maximum_vif = max(vif),
-    
-    variable_with_maximum_vif = variable[
-      which.max(vif)
-    ],
-    
-    .groups = "drop"
-  ) %>%
+    variable_with_maximum_vif = variable[which.max(vif)],.groups = "drop") %>%
   dplyr::arrange(
     hfi_variable,
-    model_structure
-  )
-
-print(vif_summary_results_60,n = Inf)
+    model_structure)
 
 
 # 4.2.5 Define readable labels for image plots ----
-vif_variable_labels_60 <- c(
-  hfi_mean_1000m = "HFI mean\n1000 m",
-  hfi_q75_1000m = "HFI Q75\n1000 m",
-  hfi_q75_500m = "HFI Q75\n500 m",
-  dem_elevation = "Elevation",
-  ruggedness_100m = "Ruggedness",
-  distance_to_ridgeline_100m = "Distance to\nridgeline",
-  prop_forest_5cells = "Forest\nproportion",
-  prop_low_vegetation_5cells = "Low vegetation\nproportion"
-)
+vif_variable_labels_60 <- c(hfi_mean_1000m = "HFI mean\n1000 m",hfi_q75_1000m = "HFI Q75\n1000 m",
+  hfi_q75_500m = "HFI Q75\n500 m",dem_elevation = "Elevation",ruggedness_100m = "Ruggedness",
+  distance_to_ridgeline_100m = "Distance to\nridgeline",prop_forest_5cells = "Forest\nproportion",
+  prop_low_vegetation_5cells = "Low vegetation\nproportion")
 
-vif_structure_labels_60 <- c(
-  altitudinal_gradient = "Altitudinal\ngradient",
-  topographic_complexity = "Topographic\ncomplexity",
-  habitat_refuge = "Habitat\nrefuge",
-  open_habitat = "Open\nhabitat"
-)
+vif_structure_labels_60 <- c(altitudinal_gradient = "Altitudinal\ngradient",
+  topographic_complexity = "Topographic\ncomplexity",habitat_refuge = "Habitat\nrefuge",
+  open_habitat = "Open\nhabitat")
 
-vif_hfi_labels_60 <- c(
-  hfi_mean_1000m = "HFI mean 1000 m",
-  hfi_q75_1000m = "HFI Q75 1000 m",
-  hfi_q75_500m = "HFI Q75 500 m"
-)
-
+vif_hfi_labels_60 <- c(hfi_mean_1000m = "HFI mean 1000 m",hfi_q75_1000m = "HFI Q75 1000 m",hfi_q75_500m = "HFI Q75 500 m")
 
 # 4.2.6 Prepare detailed VIF table for plotting ----
 vif_detailed_plot_data_60 <- vif_detailed_results_60 %>%
   dplyr::mutate(
     variable_label = unname(
       vif_variable_labels_60[
-        variable
-      ]
-    ),
-    
+        variable]),
     model_label = paste(
       unname(
         vif_hfi_labels_60[
-          hfi_variable
-        ]
-      ),
+          hfi_variable]),
       unname(
         vif_structure_labels_60[
-          model_structure
-        ]
-      ),
-      sep = "\n"
-    ),
+          model_structure]),
+      sep = "\n" ),
     
     variable_label = factor(
       variable_label,
-      levels = rev(
-        unique(
-          unname(
-            vif_variable_labels_60
-          )
-        )
-      )
-    ),
+      levels = rev(unique(unname(vif_variable_labels_60)))),
     
-    model_label = factor(
-      model_label,
-      levels = unique(model_label)
-    )
-  )
+    model_label = factor(model_label,levels = unique(model_label)))
 
 
-#------------------------------------------------------------------------------- Visualisation n°3: the detailed VIF table
+#------------------------------------------------------------------------------- VISUALISATION n°3: the detailed VIF table ----
 vif_detailed_table_plot_60 <- ggplot2::ggplot(
   vif_detailed_plot_data_60,
-  ggplot2::aes(
-    x = model_label,
-    y = variable_label,
-    fill = vif
-  )
-) +
-  ggplot2::geom_tile(
-    color = "white"
-  ) +
+  ggplot2::aes(x = model_label,y = variable_label,fill = vif)) +
+  ggplot2::geom_tile(color = "white") +
   ggplot2::geom_text(
-    ggplot2::aes(
-      label = sprintf(
-        "%.2f",
-        vif
-      )
-    ),
-    size = 3.2
-  ) +
-  ggplot2::scale_fill_gradient(
-    low = "white",
-    high = "darkseagreen3"
-  ) +
-  ggplot2::labs(
-    x = NULL,
-    y = NULL,
+    ggplot2::aes(label = sprintf("%.2f",vif)),size = 3.2) +
+  ggplot2::scale_fill_gradient(low = "white",high = "darkseagreen3") +
+  ggplot2::labs(x = NULL,y = NULL,
     fill = "VIF",
     title = "Variance inflation factors across candidate HFI models",
-    subtitle = "Detailed VIF values for each HFI metric and environmental model structure"
-  ) +
+    subtitle = "Detailed VIF values for each HFI metric and environmental model structure") +
   ggplot2::theme_bw() +
-  ggplot2::theme(
-    axis.text.x = ggplot2::element_text(
-      angle = 45,
-      hjust = 1,
-      vjust = 1
-    ),
-    panel.grid = ggplot2::element_blank()
-  )
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45,hjust = 1,vjust = 1),panel.grid = ggplot2::element_blank())
 
 print(vif_detailed_table_plot_60)
 # White cells indicate variables absent from a given model structure.
@@ -1295,79 +865,23 @@ print(vif_detailed_table_plot_60)
 # 5.1.1 Define covariates requiring standardization ----
 # age_z and duration_z were already standardized in STEP 2.
 # cos_diel and sin_time are retained on their original [-1, 1] scale.
-
-environmental_model_covariates_60 <- c(
-  "dem_elevation",
-  "ruggedness_100m",
-  "distance_to_ridgeline_100m",
-  "prop_forest_5cells",
-  "prop_low_vegetation_5cells"
-)
-
-variables_to_standardize_60 <- c(
-  selected_hfi_candidates_60,
-  environmental_model_covariates_60
-)
-
+environmental_model_covariates_60 <- c("dem_elevation","ruggedness_100m","distance_to_ridgeline_100m","prop_forest_5cells","prop_low_vegetation_5cells")
+variables_to_standardize_60 <- c(selected_hfi_candidates_60,environmental_model_covariates_60)
 
 # 5.1.2 Centre and standardize HFI and environmental covariates ----
 # scale() subtracts the empirical mean and divides by the empirical SD.
-
 hfi_model_data_60 <- backbone_data_60 %>%
   dplyr::mutate(
     dplyr::across(
       dplyr::all_of(
-        variables_to_standardize_60
-      ),
+        variables_to_standardize_60),
       ~ as.numeric(
-        scale(.x)
-      ),
-      .names = "{.col}_z"
-    )
-  )
+        scale(.x)),
+      .names = "{.col}_z"))
 
-standardized_model_covariates_60 <- paste0(
-  variables_to_standardize_60,
-  "_z"
-)
+standardized_model_covariates_60 <- paste0(variables_to_standardize_60,"_z")
 
-
-# 5.1.3 Verify centering and standardization ----
-standardization_check_60 <- dplyr::bind_rows(
-  lapply(
-    standardized_model_covariates_60,
-    function(variable_name) {
-      
-      tibble::tibble(
-        variable = variable_name,
-        
-        mean = mean(
-          hfi_model_data_60[[
-            variable_name
-          ]]
-        ),
-        
-        standard_deviation = stats::sd(
-          hfi_model_data_60[[
-            variable_name
-          ]]
-        )
-      )
-    }
-  )
-)
-
-print(
-  standardization_check_60,
-  n = Inf
-)
-
-# Inspect:
-# - mean should be approximately 0;
-# - standard_deviation should be approximately 1.
-
-
-# 5.1.4 Compile raw and standardized HFI thresholds ----
+# 5.1.3 Compile raw and standardized HFI thresholds ----
 hfi_model_thresholds_60 <- dplyr::bind_rows(
   lapply(
     selected_hfi_candidates_60,
@@ -1375,8 +889,7 @@ hfi_model_thresholds_60 <- dplyr::bind_rows(
       
       hfi_z_name <- paste0(
         hfi_name,
-        "_z"
-      )
+        "_z")
       
       tibble::tibble(
         hfi_variable = hfi_name,
@@ -1386,110 +899,53 @@ hfi_model_thresholds_60 <- dplyr::bind_rows(
             hfi_model_data_60[[
               hfi_name
             ]],
-            probs = 0.05
-          )
-        ),
+            probs = 0.05)),
         
         hfi_q95 = as.numeric(
           stats::quantile(
             hfi_model_data_60[[
               hfi_name
             ]],
-            probs = 0.95
-          )
-        ),
+            probs = 0.95)),
         
         hfi_q05_z = as.numeric(
           stats::quantile(
             hfi_model_data_60[[
               hfi_z_name
             ]],
-            probs = 0.05
-          )
-        ),
+            probs = 0.05)),
         
         hfi_q95_z = as.numeric(
           stats::quantile(
             hfi_model_data_60[[
               hfi_z_name
             ]],
-            probs = 0.95
-          )
-        )
-      )
-    }
-  )
-)
+            probs = 0.95)))}))
 
-print(
-  hfi_model_thresholds_60,
-  n = Inf
-)
+print(hfi_model_thresholds_60,n = Inf)
 
-
-#------------------------------------------------------------------------------
 # 5.2 Define and fit the 12 candidate models ----
-
-
 # 5.2.1 Define environmental model structures ----
 # All terms refer to centred and standardized covariates.
-
 hfi_model_structures_60 <- list(
-  
-  elevation = c(
-    "dem_elevation_z"
-  ),
-  
-  topographic_complexity = c(
-    "dem_elevation_z",
-    "ruggedness_100m_z",
-    "distance_to_ridgeline_100m_z"
-  ),
-  
-  habitat_refuge = c(
-    "dem_elevation_z",
-    "prop_forest_5cells_z",
-    "ruggedness_100m_z"
-  ),
-  
-  open_habitat = c(
-    "dem_elevation_z",
-    "prop_low_vegetation_5cells_z"
-  )
-)
-
+  elevation = c("dem_elevation_z"),
+  topographic_complexity = c("dem_elevation_z","ruggedness_100m_z","distance_to_ridgeline_100m_z"),
+  habitat_refuge = c("dem_elevation_z","prop_forest_5cells_z","ruggedness_100m_z"),
+  open_habitat = c("dem_elevation_z","prop_low_vegetation_5cells_z"))
 
 # 5.2.2 Define the 12 model specifications ----
-hfi_model_metadata_60 <- tidyr::expand_grid(
-  hfi_variable =
-    selected_hfi_candidates_60,
-  
-  model_type =
-    names(
-      hfi_model_structures_60
-    )
-) %>%
-  dplyr::mutate(
-    model = paste(
-      hfi_variable,
-      model_type,
-      sep = "__"
-    )
-  )
-
+hfi_model_metadata_60 <- tidyr::expand_grid(hfi_variable =selected_hfi_candidates_60,
+  model_type = names(hfi_model_structures_60)) %>%
+  dplyr::mutate(model = paste(hfi_variable,model_type,sep = "__"))
 
 # 5.2.3 Add each HFI and environmental structure to the backbone ----
-selected_backbone_formula_60 <- stats::formula(
-  provisional_backbone_model_ml_60
-)
+selected_backbone_formula_60 <- stats::formula(provisional_backbone_model_ml_60)
 
 hfi_candidate_formulas_60 <- stats::setNames(
   lapply(
     seq_len(
       nrow(
-        hfi_model_metadata_60
-      )
-    ),
+        hfi_model_metadata_60)),
     function(i) {
       
       model_information <-
@@ -1497,15 +953,11 @@ hfi_candidate_formulas_60 <- stats::setNames(
       
       hfi_term <- paste0(
         model_information$hfi_variable,
-        "_z"
-      )
+        "_z")
       
       additional_terms <- c(
         hfi_term,
-        hfi_model_structures_60[[
-          model_information$model_type
-        ]]
-      )
+        hfi_model_structures_60[[model_information$model_type]])
       
       stats::update.formula(
         selected_backbone_formula_60,
@@ -1515,290 +967,114 @@ hfi_candidate_formulas_60 <- stats::setNames(
             ". ~ . +",
             paste(
               additional_terms,
-              collapse = " + "
-            )
-          )
-        )
-      )
-    }
-  ),
-  hfi_model_metadata_60$model
-)
-
+              collapse = " + ")))
+      )}),
+  hfi_model_metadata_60$model)
 
 # 5.2.4 Fit all candidate models using ML ----
 # The same observations and estimation method are used for every model.
-
 hfi_candidate_models_ml_60 <- stats::setNames(
   lapply(
-    names(
-      hfi_candidate_formulas_60
-    ),
+    names(hfi_candidate_formulas_60),
     function(model_name) {
       
       mgcv::gam(
-        formula =
-          hfi_candidate_formulas_60[[
-            model_name
-          ]],
-        
-        data =
-          hfi_model_data_60,
-        
-        family =
-          stats::binomial(
-            link = "logit"
-          ),
-        
-        method =
-          gam_selection_method
-      )
-    }
-  ),
-  names(
-    hfi_candidate_formulas_60
-  )
-)
+        formula =hfi_candidate_formulas_60[[model_name]],
+        data =hfi_model_data_60,
+        weights =individual_weight,
+        family =stats::binomial(link = "logit"),
+        method =gam_selection_method)}),
+  names(hfi_candidate_formulas_60))
 
+# 5.3 Prepare observed covariate combinations for Q05-Q95 predictions ----
+# Predictions are averaged first within each individual and then across
+# individuals. Consequently, each individual contributes one value to the
+# population-level summaries, independently of its number of transitions.
+prediction_reference_data_60 <- hfi_model_data_60
 
-#------------------------------------------------------------------------------
-# 5.3 Draw observed covariate combinations for Q05-Q95 predictions ----
-
-
-# 5.3.1 Draw the same number of observed covariate combinations per individual ----
-# Sampling complete rows preserves the observed associations among age, diel
-# time, aerial duration, topography and habitat.
-#
-# Each individual contributes the same number of sampled rows and therefore
-# receives the same weight in population-level predictions.
-
-prediction_seed_60 <- 20260720
-n_prediction_draws_per_individual_60 <- 200L
-
-set.seed(
-  prediction_seed_60
-)
-
-prediction_reference_data_60 <- hfi_model_data_60 %>%
-  dplyr::group_by(
-    individual_id
-  ) %>%
-  dplyr::slice_sample(
-    n =
-      n_prediction_draws_per_individual_60,
-    
-    replace =
-      TRUE
-  ) %>%
-  dplyr::ungroup()
-
-prediction_sample_summary_60 <- prediction_reference_data_60 %>%
-  dplyr::count(
-    individual_id,
-    name =
-      "n_prediction_rows"
-  )
-
-print(
-  prediction_sample_summary_60,
-  n = Inf
-)
-
-# Every individual should have exactly n_prediction_draws_per_individual_60 rows.
-
-#------------------------------------------------------------------------------
 # 5.4 Extract fit statistics and Q05-Q95 contrasts ----
-
-
 # 5.4.1 Calculate model results ----
 hfi_model_results_60 <- dplyr::bind_rows(
-  lapply(
-    names(
-      hfi_candidate_models_ml_60
-    ),
+  lapply( names(hfi_candidate_models_ml_60),
     function(model_name) {
       
-      fitted_model <-
-        hfi_candidate_models_ml_60[[
-          model_name
-        ]]
+      fitted_model <- hfi_candidate_models_ml_60[[model_name]]
       
-      model_information <-
-        hfi_model_metadata_60 %>%
-        dplyr::filter(
-          model ==
-            model_name
-        )
+      model_information <-hfi_model_metadata_60 %>%dplyr::filter(
+          model ==model_name)
       
-      hfi_name <-
-        model_information$hfi_variable
+      hfi_name <-model_information$hfi_variable
       
-      hfi_term <- paste0(
-        hfi_name,
-        "_z"
-      )
+      hfi_term <- paste0(hfi_name,"_z")
       
-      hfi_thresholds <-
-        hfi_model_thresholds_60 %>%
-        dplyr::filter(
-          hfi_variable ==
-            hfi_name
-        )
+      hfi_thresholds <-hfi_model_thresholds_60 %>%
+        dplyr::filter(hfi_variable ==hfi_name)
       
-      prediction_data_q05 <-
-        prediction_reference_data_60
+      prediction_data_q05 <-prediction_reference_data_60
       
-      prediction_data_q95 <-
-        prediction_reference_data_60
+      prediction_data_q95 <-prediction_reference_data_60
       
-      prediction_data_q05[[
-        hfi_term
-      ]] <- hfi_thresholds$hfi_q05_z
+      prediction_data_q05[[hfi_term]] <- hfi_thresholds$hfi_q05_z
       
-      prediction_data_q95[[
-        hfi_term
-      ]] <- hfi_thresholds$hfi_q95_z
+      prediction_data_q95[[hfi_term]] <- hfi_thresholds$hfi_q95_z
       
       # Population-level linear predictors:
       # the individual random intercept is fixed at zero.
       linear_predictor_q05 <- stats::predict(
         fitted_model,
-        newdata =
-          prediction_data_q05,
-        type =
-          "link",
-        exclude =
-          "s(individual_id)"
-      )
+        newdata =prediction_data_q05,
+        type ="link",
+        exclude ="s(individual_id)")
       
       linear_predictor_q95 <- stats::predict(
         fitted_model,
-        newdata =
-          prediction_data_q95,
-        type =
-          "link",
-        exclude =
-          "s(individual_id)"
-      )
+        newdata =prediction_data_q95,
+        type ="link",
+        exclude ="s(individual_id)")
       
       probability_q05 <- stats::predict(
         fitted_model,
-        newdata =
-          prediction_data_q05,
-        type =
-          "response",
-        exclude =
-          "s(individual_id)"
-      )
+        newdata =prediction_data_q05,
+        type ="response",
+        exclude ="s(individual_id)")
       
       probability_q95 <- stats::predict(
         fitted_model,
-        newdata =
-          prediction_data_q95,
-        type =
-          "response",
-        exclude =
-          "s(individual_id)"
-      )
+        newdata =prediction_data_q95,
+        type ="response",
+        exclude ="s(individual_id)")
       
       coefficient_table <-
-        summary(
-          fitted_model
-        )$p.table
+        summary(fitted_model)$p.table
       
-      hfi_estimate <-
-        coefficient_table[
-          hfi_term,
-          1
-        ]
+      hfi_estimate <-coefficient_table[hfi_term,1]
       
-      hfi_standard_error <-
-        coefficient_table[
-          hfi_term,
-          2
-        ]
+      hfi_standard_error <-coefficient_table[hfi_term,2]
       
-      hfi_standardized_range <-
-        hfi_thresholds$hfi_q95_z -
-        hfi_thresholds$hfi_q05_z
+      hfi_standardized_range <-hfi_thresholds$hfi_q95_z - hfi_thresholds$hfi_q05_z
       
-      log_odds_difference <-
-        hfi_estimate *
-        hfi_standardized_range
+      log_odds_difference <-hfi_estimate *hfi_standardized_range
       
-      log_odds_difference_se <-
-        abs(
-          hfi_standardized_range
-        ) *
-        hfi_standard_error
+      log_odds_difference_se <-abs( hfi_standardized_range) *hfi_standard_error
       
       # Calculate predictions separately for each individual.
       individual_prediction_summary_60 <- tibble::tibble(
-        individual_id =
-          prediction_reference_data_60$
-          individual_id,
-        
-        linear_predictor_q05 =
-          as.numeric(
-            linear_predictor_q05
-          ),
-        
-        linear_predictor_q95 =
-          as.numeric(
-            linear_predictor_q95
-          ),
-        
-        probability_q05 =
-          as.numeric(
-            probability_q05
-          ),
-        
-        probability_q95 =
-          as.numeric(
-            probability_q95
-          )
-      ) %>%
-        dplyr::group_by(
-          individual_id
-        ) %>%
+        individual_id =prediction_reference_data_60$individual_id,
+        linear_predictor_q05 = as.numeric(linear_predictor_q05),
+        linear_predictor_q95 =as.numeric(linear_predictor_q95),
+        probability_q05 =as.numeric(probability_q05),
+        probability_q95 =as.numeric(probability_q95)) %>%
+        dplyr::group_by(individual_id) %>%
         dplyr::summarise(
-          mean_linear_predictor_q05 =
-            mean(
-              linear_predictor_q05
-            ),
-          
-          mean_linear_predictor_q95 =
-            mean(
-              linear_predictor_q95
-            ),
-          
-          mean_probability_q05 =
-            mean(
-              probability_q05
-            ),
-          
-          mean_probability_q95 =
-            mean(
-              probability_q95
-            ),
-          
-          .groups =
-            "drop"
-        ) %>%
+          mean_linear_predictor_q05 =mean(linear_predictor_q05),
+          mean_linear_predictor_q95 =mean(linear_predictor_q95),
+          mean_probability_q05 =mean(probability_q05),
+          mean_probability_q95 = mean(probability_q95),
+          .groups = "drop") %>%
         dplyr::mutate(
-          log_odds_difference_q95_q05 =
-            mean_linear_predictor_q95 -
-            mean_linear_predictor_q05,
-          
-          absolute_probability_difference =
-            mean_probability_q95 -
-            mean_probability_q05,
-          
-          relative_probability_difference_percent =
-            100 *
-            absolute_probability_difference /
-            mean_probability_q05
-        )
+          log_odds_difference_q95_q05 = mean_linear_predictor_q95 -mean_linear_predictor_q05,
+          absolute_probability_difference = mean_probability_q95 -mean_probability_q05,
+          relative_probability_difference_percent = 100 *absolute_probability_difference /mean_probability_q05)
       
       # Equal-weight population summaries:
       # each individual contributes one value to each mean.
@@ -1853,6 +1129,11 @@ hfi_model_results_60 <- dplyr::bind_rows(
           nrow(
             individual_prediction_summary_60
           ),
+        
+        hfi_coefficient =
+          hfi_estimate,
+        hfi_coefficient_se =
+          hfi_standard_error,
         
         hfi_q05 =
           hfi_thresholds$hfi_q05,
@@ -1910,57 +1191,19 @@ hfi_model_results_60 <- dplyr::bind_rows(
       levels =
         names(
           hfi_model_structures_60
-        )
-    )
-  )
+        )))
 
-print(
-  hfi_model_results_60,
-  n = Inf
-)
+#------------------------------------------------------------------------------ VISUALISATION n°4: summary table of models ----
+hfi_result_labels_60 <- c(hfi_mean_1000m ="HFI mean 1000 m",
+  hfi_q90_1000m ="HFI Q90 1000 m",
+  hfi_q75_500m ="HFI Q75 500 m")
 
+model_type_labels_60 <- c(elevation ="Elevation",
+  topographic_complexity ="Topographic complexity",
+  habitat_refuge ="Refuge",
+  open_habitat ="Open habitat")
 
-# Inspect:
-# - converged: expected TRUE;
-# - n_observations: must be identical for all 12 models;
-# - log_odds_difference_q95_q05: signed Q95-Q05 HFI contrast;
-# - relative_probability_difference_percent: relative change in predicted
-#   probability, averaged across sampled observed covariate combinations;
-# - delta_AIC: relative model support among the 12 candidate models.
-
-
-#------------------------------------------------------------------------------
-# 5.5 Compile the requested summary table ----
-
-
-# 5.5.1 Define readable model labels ----
-hfi_result_labels_60 <- c(
-  hfi_mean_1000m =
-    "HFI mean 1000 m",
-  
-  hfi_q75_1000m =
-    "HFI Q75 1000 m",
-  
-  hfi_q75_500m =
-    "HFI Q75 500 m"
-)
-
-model_type_labels_60 <- c(
-  elevation =
-    "Elevation",
-  
-  topographic_complexity =
-    "Topographic complexity",
-  
-  habitat_refuge =
-    "Refuge",
-  
-  open_habitat =
-    "Open habitat"
-)
-
-
-# 5.5.2 Create the formatted results table ----
+# Create the formatted results table
 hfi_model_summary_table_60 <- hfi_model_results_60 %>%
   dplyr::transmute(
     `HFI metric` =
@@ -1983,10 +1226,10 @@ hfi_model_summary_table_60 <- hfi_model_results_60 %>%
         log_odds_difference_q95_q05
       ),
     
-    `Relative Q95 vs Q05\nprobability difference (%)` =
+    `HFI coefficient\n(log-odds per SD)` =
       sprintf(
-        "%.2f",
-        relative_probability_difference_percent
+        "%.3f",
+        hfi_coefficient
       ),
     
     `Model EDF` =
@@ -2020,17 +1263,7 @@ hfi_model_summary_table_60 <- hfi_model_results_60 %>%
   ) %>%
   dplyr::ungroup()
 
-print(
-  hfi_model_summary_table_60,
-  n = Inf
-)
-
-
-#------------------------------------------------------------------------------
-# 5.6 Plot the results table as an image ----
-
-
-# 5.6.1 Reshape the formatted table for plotting ----
+# Reshape the formatted table for plotting
 hfi_model_table_plot_data_60 <-
   hfi_model_summary_table_60 %>%
   dplyr::mutate(
@@ -2058,9 +1291,7 @@ hfi_model_table_plot_data_60 <-
       "value"
   )
 
-table_column_order_60 <- names(
-  hfi_model_summary_table_60
-)
+table_column_order_60 <- names(hfi_model_summary_table_60)
 
 hfi_model_table_plot_data_60 <-
   hfi_model_table_plot_data_60 %>%
@@ -2085,7 +1316,7 @@ hfi_model_table_plot_data_60 <-
   )
 
 
-# 5.6.2 Plot table ----
+# plot table
 hfi_model_summary_table_plot_60 <- ggplot2::ggplot(
   hfi_model_table_plot_data_60,
   ggplot2::aes(
@@ -2153,11 +1384,21 @@ hfi_model_summary_table_plot_60 <- ggplot2::ggplot(
         15,
         15,
         15,
-        15
-      )
-  )
+        15))
 
 print(hfi_model_summary_table_plot_60)
+#------------------------------------------------------------------------------- (end visualisation n°4)
+#' we selected the Open Habitat HFI mean 1000m because the HFI coefficient is stable in comparison to 
+#' the model that only include elevation. The AIC is also the smallest compared to the other models. 
+
+# Print the summary of the selected model:
+# HFI mean within 1000 m + open-habitat covariates
+selected_model_name_60 <-
+  "hfi_mean_1000m__open_habitat"
+
+selected_open_habitat_model_60 <-hfi_candidate_models_ml_60[[selected_model_name_60]]
+
+print(summary(selected_open_habitat_model_60))
 
 
 
