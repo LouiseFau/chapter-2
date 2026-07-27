@@ -666,24 +666,7 @@ hfi_thresholds_60 <- hfi_support_long_60 %>%
 print(hfi_thresholds_60,n = Inf)
 
 # 4.1.3 Count observations, individuals and bursts across HFI classes ----
-hfi_class_support_60 <- hfi_support_long_60 %>%
-  dplyr::mutate(
-    hfi_class = cut(
-      hfi_value,
-      breaks =hfi_classes_60,
-      labels =hfi_labels_60,
-      include.lowest =TRUE,
-      right =TRUE)) %>%
-  dplyr::group_by(hfi_variable,hfi_class) %>%
-  dplyr::summarise(n_observations =dplyr::n(),
-    n_individuals =dplyr::n_distinct(individual_id),
-    n_bursts =dplyr::n_distinct(burst_id),
-    n_remain_aerial =sum(remain_aerial == 1L),
-    n_transition_terrestrial =sum(remain_aerial == 0L),
-    proportion_remain_aerial = mean(remain_aerial),
-    .groups ="drop") %>%
-  dplyr::arrange(hfi_variable,hfi_class)
-
+hfi_class_support_60 <- hfi_support_long_60 %>% dplyr::mutate( hfi_class = cut( hfi_value, breaks =hfi_classes_60, labels =hfi_labels_60, include.lowest =TRUE, right =TRUE)) %>% dplyr::group_by(hfi_variable,hfi_class) %>% dplyr::summarise(n_observations =dplyr::n(), n_individuals =dplyr::n_distinct(individual_id), n_bursts =dplyr::n_distinct(burst_id), n_remain_aerial =sum(remain_aerial == 1L), n_transition_terrestrial =sum(remain_aerial == 0L), proportion_remain_aerial = mean(remain_aerial), .groups ="drop") %>% dplyr::arrange(hfi_variable,hfi_class)
 # 4.1.4 Prepare individual and transition counts for one plot ----
 hfi_class_plot_data_60 <- hfi_class_support_60 %>%
   dplyr::select(hfi_variable,hfi_class,n_individuals,n_observations) %>%
@@ -698,64 +681,100 @@ hfi_class_plot_data_60 <- hfi_class_support_60 %>%
       n_observations =
         "Number of aerial-origin transitions"))
 
-#------------------------------------------------------------------------------- VISUALISATION n°2 : empirical support ----
-hfi_support_comparison_plot_60 <- hfi_class_plot_data_60 %>%
-  ggplot2::ggplot(ggplot2::aes(x =hfi_class,y =count,group =hfi_variable,color =hfi_variable)) +
-  ggplot2::geom_line(linewidth = 0.9) +
-  ggplot2::geom_point(size = 2.5) +
-  ggplot2::facet_wrap(~ support_measure,ncol = 1,scales = "free_y") +
-  ggplot2::labs(x ="Absolute HFI class",y ="Count",color ="HFI metric", title = "Empirical support across HFI classes",
-    subtitle ="Comparison of individual and transition support among candidate HFI metrics") +
-  ggplot2::theme_bw() +
-  ggplot2::theme(axis.text.x =ggplot2::element_text(angle = 45,hjust = 1),
-    legend.position ="right")
-
-print(hfi_support_comparison_plot_60)
-
-# Summarise support in the lowest and highest HFI classes ----
-hfi_extreme_support_60 <- hfi_class_support_60 %>%
-  dplyr::filter(
-    as.character(hfi_class) %in% c("0-0.10", ">0.80")
-  ) %>%
-  dplyr::mutate(
-    hfi_group = dplyr::recode(
-      as.character(hfi_class),
-      "0-0.10" = "0_10",
-      ">0.80"  = "above_0_80"
-    )
-  ) %>%
-  dplyr::select(
-    hfi_variable,
-    hfi_group,
-    n_individuals,
-    n_bursts
-  ) %>%
-  tidyr::pivot_wider(
-    names_from = hfi_group,
-    values_from = c(n_individuals, n_bursts),
-    names_glue = "{.value}_HFI_{hfi_group}"
-  ) %>%
+# # 4.1.5 Quantile support: number of individuals and bursts in relative Q05 and Q95 ----
+# Define individual support around relative quantiles
+hfi_quantile_support_60 <- hfi_support_long_60 %>%
   dplyr::left_join(
     hfi_thresholds_60 %>%
       dplyr::select(
         hfi_variable,
-        hfi_min,
-        hfi_max
+        hfi_q05,
+        hfi_q95
+      ),
+    by = "hfi_variable"
+  ) %>%
+  dplyr::mutate(
+    hfi_quantile_class =
+      dplyr::case_when(
+        hfi_value <= hfi_q05 ~ "Q05_lowest_HFI",
+        hfi_value >= hfi_q95 ~ "Q95_highest_HFI",
+        TRUE ~ NA_character_
+      )
+  ) %>%
+  dplyr::filter(
+    !is.na(hfi_quantile_class)
+  ) %>%
+  dplyr::group_by(
+    hfi_variable,
+    hfi_quantile_class
+  ) %>%
+  dplyr::summarise(
+    n_observations =
+      dplyr::n(),
+    
+    n_individuals =
+      dplyr::n_distinct(
+        individual_id
+      ),
+    
+    n_bursts =
+      dplyr::n_distinct(
+        individual_id,
+        burst_id
+      ),
+    
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from =
+      hfi_quantile_class,
+    
+    values_from =
+      c(
+        n_observations,
+        n_individuals,
+        n_bursts
+      ),
+    
+    values_fill = 0,
+    
+    names_glue =
+      "{.value}_{hfi_quantile_class}"
+  )
+
+
+# Add quantile thresholds for interpretation
+hfi_quantile_support_60 <- hfi_quantile_support_60 %>%
+  dplyr::left_join(
+    hfi_thresholds_60 %>%
+      dplyr::select(
+        hfi_variable,
+        hfi_q05,
+        hfi_q95
       ),
     by = "hfi_variable"
   ) %>%
   dplyr::select(
     hfi_variable,
-    hfi_min,
-    hfi_max,
-    n_individuals_HFI_0_10,
-    n_individuals_HFI_above_0_80,
-    n_bursts_HFI_0_10,
-    n_bursts_HFI_above_0_80
+    hfi_q05,
+    hfi_q95,
+    dplyr::everything()
   )
 
-print(hfi_extreme_support_60,n = Inf)
-#------------------------------------------------------------------------------- (end) Visualisation n°2 : empirical support
+
+print(hfi_quantile_support_60,n = Inf,width = Inf)
+# all metrics are well supported, individuals contributes to extrem parts of the
+# gradient, therefore, selection of the correct metric depend on biological interpretability
+# hfi_variable   hfi_q05 hfi_q95 n_observations_Q05_lowest_HFI n_observations_Q95_highest_HFI n_individuals_Q05_lowest_HFI n_individuals_Q95_highest_HFI n_bursts_Q05_lowest_HFI n_bursts_Q95_highest_HFI
+# hfi_point      0         0.366                          3603                            544                           62                            59                    2355                      484
+# hfi_mean_500m  0         0.352                          1131                            544                           59                            59                     869                      472
+# hfi_q75_500m   0         0.432                          2220                            544                           62                            60                    1575                      479
+# hfi_mean_1000m 0.00102   0.345                           544                            544                           55                            59                     437                      468
+# hfi_q75_1000m  0         0.475                          1444                            544                           60                            60                    1061                      473
+# hfi_q90_500m   0         0.498                          1567                            544                           61                            60                    1156                      479
+# hfi_q90_1000m  0         0.592                           733                            544                           56                            60                     583                      475
+
+#-------------------------------------------------------------------------------
 selected_hfi_candidates_60 <- c("hfi_mean_1000m","hfi_q90_1000m","hfi_q75_500m")
 
 
