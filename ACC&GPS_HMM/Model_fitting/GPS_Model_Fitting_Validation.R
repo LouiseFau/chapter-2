@@ -56,33 +56,100 @@ results_directory_60 <- paste0(
 dir.create(results_directory_60,recursive = TRUE,showWarnings = FALSE)
 
 
-#------------------------------------------------------------------------------- STEP 1: fit common- and individual-HFI-slope open-habitat models ----
+#-------------------------------------------------------------------------------
+# STEP 1: fit three open-habitat HFI models ----
+#' **Questions:**
+#' (i) Is an increase in HFI associated with an increase in the probability of
+#'     remaining aerial, assuming a common response among individuals?
+#' (ii) When an individual encounters a higher HFI than its usual environment,
+#'      does it modify its probability of remaining aerial?
+#' (iii) Does the behavioural response to a within-individual increase in HFI
+#'       vary among individuals?
+#'
 #' **Steps:**
-#' (i) verify the modelling dataset and individual weights;
-#' (ii) decompose HFI into within- and between-individual components;
-#' (iii) fit a common-slope and an individual-random-slope model;
-#' (iv) compare HFI stability, confidence intervals, AIC and EDF;
-#' (v) extract individual HFI slopes and individual-specific Q05-Q95 contrasts;
-#' (vi) retain individuals with negative HFI-response estimates.
+#' (i) prepare the common modelling dataset and decompose HFI into within- and
+#'     between-individual components;
+#' (ii) fit a global common-HFI-slope model;
+#' (iii) fit a common within-individual-HFI-slope model;
+#' (iv) fit an individual-random-within-HFI-slope model;
+#' (v) compare HFI coefficients, Q05-Q95 contrasts, AIC, EDF and model fit.
+
 
 # 1.1 Prepare the common modelling dataset ----
-# hfi_mean_1000m_z = hfi standardized.
-# hfi_between_z = mean globally standardized HFI used by each individual.
-# hfi_within_z = deviation of each observation from the individual's mean HFI.
+# hfi_raw_z:
+#   globally standardized HFI value at each transition.
+#
+# hfi_between_z:
+#   mean globally standardized HFI encountered by each individual.
+#
+# hfi_within_z:
+#   deviation of each observation from the individual's mean HFI.
+#
+# Because hfi_within_z is centred but not rescaled separately by individual,
+# an identical increase in hfi_within_z represents an identical absolute
+# increase on the global standardized HFI scale for every individual.
+
 open_habitat_model_data_60 <-
   GE_standardize_weighted %>%
   dplyr::mutate(
-    individual_id = droplevels(factor(individual_id))) %>%
-  dplyr::group_by(individual_id) %>%
-  dplyr::mutate(hfi_between_z =mean(.data[[hfi_variable_60]]),
-    hfi_within_z =.data[[hfi_variable_60]] - hfi_between_z) %>%
+    individual_id =
+      droplevels(
+        factor(individual_id)
+      ),
+    
+    hfi_raw_z =
+      .data[[hfi_variable_60]]
+  ) %>%
+  dplyr::group_by(
+    individual_id
+  ) %>%
+  dplyr::mutate(
+    hfi_between_z =
+      mean(hfi_raw_z),
+    
+    hfi_within_z =
+      hfi_raw_z -
+      hfi_between_z
+  ) %>%
   dplyr::ungroup()
 
-# 1.2 Define the common-slope model ----
-# hfi_within_z estimates the response to HFI variation encountered within
+
+# 1.2 Define model 1: global common HFI slope ----
+# Question 1:
+# Is an increase in observed HFI associated with a modification of the
+# probability of remaining aerial, assuming the same HFI response for all
+# individuals?
+#
+# The coefficient of hfi_raw_z combines within- and between-individual
+# information and therefore represents the global HFI association.
+
+global_common_hfi_slope_formula_60 <-
+  remain_aerial ~
+  cos_diel +
+  sin_time +
+  age_z +
+  duration_z +
+  duration_z2 +
+  hfi_raw_z +
+  dem_elevation_z +
+  prop_low_vegetation_5cells_z +
+  s(
+    individual_id,
+    bs = "re"
+  )
+
+
+# 1.3 Define model 2: common within-individual HFI slope ----
+# Question 2:
+# When an individual encounters a higher HFI than its usual environment,
+# does it modify its probability of remaining aerial?
+#
+# hfi_within_z estimates the population-average within-individual response.
+# hfi_between_z controls differences in mean HFI exposure among individuals.
+# The within-individual HFI response is assumed to be identical for all
 # individuals.
-# hfi_between_z controls differences in average exposure among individuals.
-common_hfi_slope_formula_60 <-
+
+within_common_hfi_slope_formula_60 <-
   remain_aerial ~
   cos_diel +
   sin_time +
@@ -95,14 +162,22 @@ common_hfi_slope_formula_60 <-
   prop_low_vegetation_5cells_z +
   s(
     individual_id,
-    bs = "re")
+    bs = "re"
+  )
 
 
-# 1.3 Define the individual-random-slope model ----
-# The additional random-effect term estimates individual deviations from the
-# population within-individual HFI slope. The model answer the following question :
-# "Do individuals differ in their response to a increase of HFI measured on a common scale?
-individual_hfi_slope_formula_60 <-
+# 1.4 Define model 3: individual random within-individual HFI slopes ----
+# Question 3:
+# Does the behavioural response to a comparable within-individual increase
+# in HFI vary among individuals?
+#
+# The fixed hfi_within_z coefficient estimates the population-average
+# within-individual response.
+#
+# The additional random-slope term estimates individual deviations from this
+# population-average response.
+
+within_individual_hfi_slope_formula_60 <-
   remain_aerial ~
   cos_diel +
   sin_time +
@@ -124,13 +199,16 @@ individual_hfi_slope_formula_60 <-
   )
 
 
-# 1.4 Fit both models using ML ----
-# ML is retained because the models are compared using AIC.
-# Both models use exactly the same observations and individual weights.
-common_hfi_slope_model_ml_60 <-
+# 1.5 Fit the three models using ML ----
+# ML must be used because the models differ in their fixed-effect structure
+# and are compared using AIC.
+#
+# All models use exactly the same observations and individual weights.
+
+global_common_hfi_slope_model_ml_60 <-
   mgcv::gam(
     formula =
-      common_hfi_slope_formula_60,
+      global_common_hfi_slope_formula_60,
     
     data =
       open_habitat_model_data_60,
@@ -147,237 +225,387 @@ common_hfi_slope_model_ml_60 <-
       gam_selection_method
   )
 
-individual_hfi_slope_model_ml_60 <-
+
+within_common_hfi_slope_model_ml_60 <-
   mgcv::gam(
     formula =
-      individual_hfi_slope_formula_60,
+      within_common_hfi_slope_formula_60,
     
-    data = open_habitat_model_data_60,
+    data =
+      open_habitat_model_data_60,
     
-    weights = individual_weight,
+    weights =
+      individual_weight,
     
     family =
       stats::binomial(
         link = "logit"
       ),
     
-    method =gam_selection_method
+    method =
+      gam_selection_method
   )
 
-# 1.5 Compact comparison of common- and random-slope models ----
-models_to_compare_60 <- list( `Common HFI slope` = common_hfi_slope_model_ml_60, `Individual random HFI slopes` = individual_hfi_slope_model_ml_60)
 
-# Standardized HFI difference between Q05 and Q95
-hfi_q95_q05_difference_z_60 <- hfi_thresholds_60$hfi_q95_q05_difference_z
+within_individual_hfi_slope_model_ml_60 <-
+  mgcv::gam(
+    formula =
+      within_individual_hfi_slope_formula_60,
+    
+    data =
+      open_habitat_model_data_60,
+    
+    weights =
+      individual_weight,
+    
+    family =
+      stats::binomial(
+        link = "logit"
+      ),
+    
+    method =
+      gam_selection_method
+  )
+
+
+# 1.6 Compact comparison of the three models ----
+
+models_to_compare_60 <-
+  list(
+    `1. Global common HFI slope` =
+      list(
+        model =
+          global_common_hfi_slope_model_ml_60,
+        
+        hfi_term =
+          "hfi_raw_z"
+      ),
+    
+    `2. Common within-individual HFI slope` =
+      list(
+        model =
+          within_common_hfi_slope_model_ml_60,
+        
+        hfi_term =
+          "hfi_within_z"
+      ),
+    
+    `3. Individual within-individual HFI slopes` =
+      list(
+        model =
+          within_individual_hfi_slope_model_ml_60,
+        
+        hfi_term =
+          "hfi_within_z"
+      )
+  )
+
+
+# Standardized HFI difference between the empirical Q05 and Q95.
+#
+# The same HFI increase is used for all three models. Because hfi_within_z is
+# centred but not rescaled by individual, a Q05-Q95 increase has the same
+# magnitude on the hfi_raw_z and hfi_within_z scales.
+
+hfi_q05_z_60 <-
+  as.numeric(
+    stats::quantile(
+      open_habitat_model_data_60$hfi_raw_z,
+      probs = 0.05,
+      na.rm = TRUE
+    )
+  )
+
+hfi_q95_z_60 <-
+  as.numeric(
+    stats::quantile(
+      open_habitat_model_data_60$hfi_raw_z,
+      probs = 0.95,
+      na.rm = TRUE
+    )
+  )
+
+hfi_q95_q05_difference_z_60 <-
+  hfi_q95_z_60 -
+  hfi_q05_z_60
+
 
 # Extract the requested statistics from one model
-extract_model_statistics_60 <- function(model) {
-  
-  model_summary <- summary(model,re.test = TRUE)
-  
-  coefficient_table <- model_summary$p.table
-  
-  # Population fixed HFI slope
-  hfi_estimate <-coefficient_table["hfi_within_z","Estimate"]
-  
-  hfi_standard_error <-
-    coefficient_table[
-      "hfi_within_z",
-      "Std. Error"
-    ]
-  
-  # Identify the individual random-HFI-slope term
-  random_slope_term <- grep(
-    pattern =
-      "hfi_within_z.*individual_id|individual_id.*hfi_within_z",
+extract_model_statistics_60 <-
+  function(
+    model,
+    hfi_term
+  ) {
     
-    x =
-      rownames(model_summary$s.table),
+    model_summary <-
+      summary(
+        model,
+        re.test = TRUE
+      )
     
-    value = TRUE
-  )
-  
-  has_random_hfi_slopes <-
-    length(random_slope_term) == 1L
-  
-  random_slope_edf <- if (has_random_hfi_slopes) {
+    coefficient_table <-
+      model_summary$p.table
     
-    model_summary$s.table[
-      random_slope_term,
-      "edf"
-    ]
+    # CONTROL: focal HFI term must be present
+    stopifnot(
+      hfi_term %in%
+        rownames(
+          coefficient_table
+        )
+    )
     
-  } else {
+    # Fixed population HFI slope
+    hfi_estimate <-
+      coefficient_table[
+        hfi_term,
+        "Estimate"
+      ]
     
-    NA_real_
-  }
-  
-  random_slope_p <- if (has_random_hfi_slopes) {
+    hfi_standard_error <-
+      coefficient_table[
+        hfi_term,
+        "Std. Error"
+      ]
     
-    model_summary$s.table[
-      random_slope_term,
-      ncol(model_summary$s.table)
-    ]
+    # Fixed-slope 95% confidence interval
+    hfi_confidence_low <-
+      hfi_estimate -
+      1.96 *
+      hfi_standard_error
     
-  } else {
+    hfi_confidence_high <-
+      hfi_estimate +
+      1.96 *
+      hfi_standard_error
     
-    NA_real_
-  }
-  
-  # Q05-Q95 log-odds contrast for the common-slope model
-  q05_q95_log_odds_contrast <- if (!has_random_hfi_slopes) {
+    # Identify the individual random within-HFI-slope term
+    random_slope_term <-
+      grep(
+        pattern =
+          "hfi_within_z.*individual_id|individual_id.*hfi_within_z",
+        
+        x =
+          rownames(
+            model_summary$s.table
+          ),
+        
+        value = TRUE
+      )
     
-    hfi_estimate *
+    has_random_hfi_slopes <-
+      length(
+        random_slope_term
+      ) == 1L
+    
+    random_slope_edf <-
+      if (
+        has_random_hfi_slopes
+      ) {
+        
+        model_summary$s.table[
+          random_slope_term,
+          "edf"
+        ]
+        
+      } else {
+        
+        NA_real_
+      }
+    
+    random_slope_p <-
+      if (
+        has_random_hfi_slopes
+      ) {
+        
+        model_summary$s.table[
+          random_slope_term,
+          ncol(
+            model_summary$s.table
+          )
+        ]
+        
+      } else {
+        
+        NA_real_
+      }
+    
+    # Q05-Q95 fixed-effect log-odds contrast
+    #
+    # Model 1:
+    # global Q05-Q95 HFI association.
+    #
+    # Models 2 and 3:
+    # population-average change associated with a within-individual HFI
+    # increase having the same magnitude as the global Q05-Q95 difference.
+    q05_q95_log_odds_contrast <-
+      hfi_estimate *
       hfi_q95_q05_difference_z_60
     
-  } else {
+    q05_q95_log_odds_se <-
+      hfi_standard_error *
+      abs(
+        hfi_q95_q05_difference_z_60
+      )
     
-    NA_real_
-  }
-  
-  # Standard error of the Q05-Q95 log-odds contrast
-  q05_q95_log_odds_se <- if (!has_random_hfi_slopes) {
+    q05_q95_log_odds_ci_low <-
+      q05_q95_log_odds_contrast -
+      1.96 *
+      q05_q95_log_odds_se
     
-    hfi_standard_error *
-      abs(hfi_q95_q05_difference_z_60)
+    q05_q95_log_odds_ci_high <-
+      q05_q95_log_odds_contrast +
+      1.96 *
+      q05_q95_log_odds_se
     
-  } else {
-    
-    NA_real_
-  }
-  
-  # Wald 95% confidence interval
-  q05_q95_log_odds_ci_low <-
-    q05_q95_log_odds_contrast -
-    1.96 * q05_q95_log_odds_se
-  
-  q05_q95_log_odds_ci_high <-
-    q05_q95_log_odds_contrast +
-    1.96 * q05_q95_log_odds_se
-  
-  tibble::tibble(
-    Statistic = c(
-      "Number of observations",
-      "Number of individuals",
-      "AIC",
-      "Total EDF",
-      "HFI coefficient",
-      "Q05-Q95 HFI log-odds contrast",
-      "Q05-Q95 HFI log-odds 95% CI",
-      "Random-slope EDF",
-      "Random-slope p-value",
-      "Deviance explained (%)",
-      "Converged"
-    ),
-    
-    Value = c(
-      nrow(
-        stats::model.frame(model)
+    tibble::tibble(
+      Statistic = c(
+        "Number of observations",
+        "Number of individuals",
+        "AIC",
+        "Total EDF",
+        "HFI coefficient",
+        "HFI coefficient 95% CI",
+        "Q05-Q95 HFI log-odds contrast",
+        "Q05-Q95 HFI log-odds 95% CI",
+        "Random-slope EDF",
+        "Random-slope p-value",
+        "Deviance explained (%)",
+        "Converged"
       ),
       
-      dplyr::n_distinct(
-        stats::model.frame(model)$individual_id
-      ),
-      
-      sprintf(
-        "%.1f",
-        stats::AIC(model)
-      ),
-      
-      sprintf(
-        "%.2f",
-        sum(model$edf)
-      ),
-      
-      sprintf(
-        "%.3f",
-        hfi_estimate
-      ),
-      
-      ifelse(
-        is.na(q05_q95_log_odds_contrast),
-        "--",
+      Value = c(
+        nrow(
+          stats::model.frame(
+            model
+          )
+        ),
+        
+        dplyr::n_distinct(
+          stats::model.frame(
+            model
+          )$individual_id
+        ),
+        
+        sprintf(
+          "%.1f",
+          stats::AIC(
+            model
+          )
+        ),
+        
+        sprintf(
+          "%.2f",
+          sum(
+            model$edf
+          )
+        ),
+        
+        sprintf(
+          "%.3f",
+          hfi_estimate
+        ),
+        
+        sprintf(
+          "[%.3f, %.3f]",
+          hfi_confidence_low,
+          hfi_confidence_high
+        ),
+        
         sprintf(
           "%.3f",
           q05_q95_log_odds_contrast
-        )
-      ),
-      
-      ifelse(
-        is.na(q05_q95_log_odds_contrast),
-        "--",
+        ),
+        
         sprintf(
           "[%.3f, %.3f]",
           q05_q95_log_odds_ci_low,
           q05_q95_log_odds_ci_high
-        )
-      ),
-      
-      ifelse(
-        is.na(random_slope_edf),
-        "--",
+        ),
+        
+        ifelse(
+          is.na(
+            random_slope_edf
+          ),
+          "--",
+          sprintf(
+            "%.2f",
+            random_slope_edf
+          )
+        ),
+        
+        ifelse(
+          is.na(
+            random_slope_p
+          ),
+          "--",
+          format.pval(
+            random_slope_p,
+            digits = 3,
+            eps = 0.001
+          )
+        ),
+        
         sprintf(
           "%.2f",
-          random_slope_edf
+          100 *
+            model_summary$dev.expl
+        ),
+        
+        as.character(
+          model$converged
         )
-      ),
-      
-      ifelse(
-        is.na(random_slope_p),
-        "--",
-        format.pval(
-          random_slope_p,
-          digits = 3,
-          eps = 0.001
-        )
-      ),
-      
-      sprintf(
-        "%.2f",
-        100 * model_summary$dev.expl
-      ),
-      
-      as.character(
-        model$converged
       )
     )
-  )
-}
+  }
 
-# Extract statistics and place models in columns
+
+# Extract statistics and place the three models in columns
 open_habitat_model_comparison_table_60 <-
   dplyr::bind_rows(
     lapply(
       models_to_compare_60,
-      extract_model_statistics_60
+      function(model_specification) {
+        
+        extract_model_statistics_60(
+          model =
+            model_specification$model,
+          
+          hfi_term =
+            model_specification$hfi_term
+        )
+      }
     ),
+    
     .id = "Model"
   ) %>%
   tidyr::pivot_wider(
-    names_from = Model,
-    values_from = Value
+    names_from =
+      Model,
+    
+    values_from =
+      Value
   )
 
-print(
-  open_habitat_model_comparison_table_60,
-  n = Inf
-)
-# Statistic              `Common HFI slope` `Individual random HFI slopes`
-# Number of observations        10872              10872                         
-# Number of individuals         62                 62                            
-# AIC                           15707.0            15693.5                       
-# Total EDF                     49.59              70.70                         
-# HFI coefficient               0.053              0.061                         
-# Q05-Q95 HFI log-odds contrast 0.158              --                            
-# Q05-Q95 HFI log-odds 95% CI   [-0.006, 0.323]    --                            
-# Random-slope EDF              --                 20.98                         
-# Random-slope p-value          --                 0.00366                       
-# Deviance explained (%)        3.73               4.11                          
-# Converged                     TRUE               TRUE   
+
+print(open_habitat_model_comparison_table_60,n = Inf,width = Inf)
+# Statistic                     `1. Global common HFI slope` `2. Common within-individual HFI slope` `3. Individual within-individual HFI slopes`
+#   1 Number of observations        10872                        10872                                   10872                                       
+# 2 Number of individuals         62                           62                                      62                                          
+# 3 AIC                           15706.3                      15707.0                                 15693.5                                     
+# 4 Total EDF                     49.53                        49.59                                   70.70                                       
+# 5 HFI coefficient               0.051                        0.053                                   0.061                                       
+# 6 HFI coefficient 95% CI        [-0.004, 0.105]              [-0.002, 0.107]                         [-0.003, 0.125]                             
+# 7 Q05-Q95 HFI log-odds contrast 0.151                        0.157                                   0.182                                       
+# 8 Q05-Q95 HFI log-odds 95% CI   [-0.012, 0.314]              [-0.006, 0.320]                         [-0.009, 0.374]                             
+# 9 Random-slope EDF              --                           --                                      20.98                                       
+# 10 Random-slope p-value          --                           --                                      0.00366                                     
+# 11 Deviance explained (%)        3.74                         3.73                                    4.11                                        
+# 12 Converged                     TRUE                         TRUE                                    TRUE  
+
 
 # 1.6 Extract and rank individual HFI slopes ----
 # HFI_slope = population HFI slope + individual random-slope deviation.
-individual_slope_template_60 <- stats::model.frame(individual_hfi_slope_model_ml_60) %>%
+individual_slope_template_60 <- stats::model.frame(within_individual_hfi_slope_model_ml_60) %>%
   tibble::as_tibble() %>%
   dplyr::group_by(individual_id) %>%
   dplyr::mutate(n_transitions =dplyr::n()) %>%
