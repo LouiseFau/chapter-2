@@ -685,8 +685,6 @@ hfi_class_support_60 <- hfi_support_long_60 %>%
     .groups ="drop") %>%
   dplyr::arrange(hfi_variable,hfi_class)
 
-print(hfi_class_support_60,n = Inf)
-
 # 4.1.4 Prepare individual and transition counts for one plot ----
 hfi_class_plot_data_60 <- hfi_class_support_60 %>%
   dplyr::select(hfi_variable,hfi_class,n_individuals,n_observations) %>%
@@ -700,7 +698,6 @@ hfi_class_plot_data_60 <- hfi_class_support_60 %>%
         "Number of individuals",
       n_observations =
         "Number of aerial-origin transitions"))
-print(hfi_class_plot_data_60, n = Inf)
 
 #------------------------------------------------------------------------------- VISUALISATION n°2 : empirical support ----
 hfi_support_comparison_plot_60 <- hfi_class_plot_data_60 %>%
@@ -715,6 +712,50 @@ hfi_support_comparison_plot_60 <- hfi_class_plot_data_60 %>%
     legend.position ="right")
 
 print(hfi_support_comparison_plot_60)
+
+# Summarise support in the lowest and highest HFI classes ----
+hfi_extreme_support_60 <- hfi_class_support_60 %>%
+  dplyr::filter(
+    as.character(hfi_class) %in% c("0-0.10", ">0.80")
+  ) %>%
+  dplyr::mutate(
+    hfi_group = dplyr::recode(
+      as.character(hfi_class),
+      "0-0.10" = "0_10",
+      ">0.80"  = "above_0_80"
+    )
+  ) %>%
+  dplyr::select(
+    hfi_variable,
+    hfi_group,
+    n_individuals,
+    n_bursts
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = hfi_group,
+    values_from = c(n_individuals, n_bursts),
+    names_glue = "{.value}_HFI_{hfi_group}"
+  ) %>%
+  dplyr::left_join(
+    hfi_thresholds_60 %>%
+      dplyr::select(
+        hfi_variable,
+        hfi_min,
+        hfi_max
+      ),
+    by = "hfi_variable"
+  ) %>%
+  dplyr::select(
+    hfi_variable,
+    hfi_min,
+    hfi_max,
+    n_individuals_HFI_0_10,
+    n_individuals_HFI_above_0_80,
+    n_bursts_HFI_0_10,
+    n_bursts_HFI_above_0_80
+  )
+
+print(hfi_extreme_support_60,n = Inf)
 #------------------------------------------------------------------------------- (end) Visualisation n°2 : empirical support
 selected_hfi_candidates_60 <- c("hfi_mean_1000m","hfi_q90_1000m","hfi_q75_500m")
 
@@ -1387,6 +1428,44 @@ hfi_model_summary_table_plot_60 <- ggplot2::ggplot(
         15))
 
 print(hfi_model_summary_table_plot_60)
+
+# 4.1.4 Summarise support at the 10th and 80th HFI quantiles ----
+
+hfi_q10_q80_support_60 <- hfi_support_long_60 %>%
+  dplyr::filter(
+    !is.na(hfi_value),
+    !is.na(individual_id),
+    !is.na(burst_id)
+  ) %>%
+  dplyr::group_by(hfi_variable) %>%
+  dplyr::mutate(
+    HFI_q10 = as.numeric(
+      stats::quantile(hfi_value, probs = 0.10, na.rm = TRUE)
+    ),
+    HFI_q80 = as.numeric(
+      stats::quantile(hfi_value, probs = 0.80, na.rm = TRUE)
+    )
+  ) %>%
+  dplyr::summarise(
+    HFI_q10 = dplyr::first(HFI_q10),
+    HFI_q80 = dplyr::first(HFI_q80),
+    
+    n_individuals_HFI_q10 =
+      dplyr::n_distinct(individual_id[hfi_value <= HFI_q10]),
+    
+    n_individuals_HFI_q80 =
+      dplyr::n_distinct(individual_id[hfi_value >= HFI_q80]),
+    
+    n_bursts_HFI_q10 =
+      dplyr::n_distinct(burst_id[hfi_value <= HFI_q10]),
+    
+    n_bursts_HFI_q80 =
+      dplyr::n_distinct(burst_id[hfi_value >= HFI_q80]),
+    
+    .groups = "drop"
+  )
+
+print(hfi_q10_q80_support_60,n = Inf)
 #------------------------------------------------------------------------------- (end visualisation n°4)
 #' we selected the Open Habitat HFI mean 1000m because the HFI coefficient is stable in comparison to 
 #' the model that only include elevation. The AIC is also the smallest compared to the other models. 
