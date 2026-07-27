@@ -42,7 +42,6 @@ library(mgcv)
 # data
 GE_60_min_covariates_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_60_min_covariates_hfi.rds")
 
-
 # parameters
 state_levels <- c("aerial", "terrestrial")
 transition_levels <- c("aerial_to_aerial", "aerial_to_terrestrial", "terrestrial_to_aerial", "terrestrial_to_terrestrial")
