@@ -35,7 +35,7 @@ dem <- terra::rast("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/T
 emig_dates <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
 nest_site <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/nest site location/nest_site_location/nest_site_location.rds")
 
-rds_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/no_burst_GE/no_burst_GE"
+rds_dir <- "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/no_burst_GE/"
 rds_files <- tools::file_path_sans_ext(list.files(rds_dir, pattern = "\\.rds$", ignore.case = TRUE))
 rds_ids   <- as.numeric(gsub("_gpsNoDup_moveObj", "", rds_files))
 
@@ -61,31 +61,37 @@ tz_loc <- "Europe/Zurich"
 
 
 # 1.1 Loop through the files ----
-dispersal_data <- lapply(rds_files_filtered, function(f) {
+dispersal_data <- lapply(rds_files_filtered,function(f) {
   
-  id  <- as.numeric(gsub("_gpsNoDup_moveObj", "", f))
-  obj <- readRDS(file.path(rds_dir, paste0(f, ".rds")))
-  df  <- as.data.frame(obj)
+  id <- as.numeric(gsub("_gpsNoDup_moveObj","",f))
+  obj <- readRDS(file.path(rds_dir,paste0(f,".rds")))
+  df <- as.data.frame(obj)
   
-  df <- df[, c(
-    "individual.local.identifier",
-    "timestamp",
-    "location.long",
-    "location.lat",
-    "height.above.ellipsoid",
-    "ground.speed",
-    "eobs.speed.accuracy.estimate",
-    "eobs.horizontal.accuracy.estimate",
-    "gps.dop",
-    "vert.speed",
-    "turn.angle",
-    "step.length",
-    "gr.speed",
-    "eobs.type.of.fix")]
+  df <- df[,c("individual.local.identifier","timestamp","location.long","location.lat","height.above.ellipsoid","ground.speed","eobs.speed.accuracy.estimate","eobs.horizontal.accuracy.estimate","gps.dop","vert.speed","turn.angle","step.length","gr.speed","eobs.type.of.fix")]
   
-  df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
-  
+  df$timestamp <- as.POSIXct(df$timestamp,tz = "UTC")
   emig_dt <- emig_dates_filtered$dispersal_date[emig_dates_filtered$individual.id == id]
+  
+  # 1.1.1 Retain only the first fifteen weeks of dispersal ----
+  df <- df[df$timestamp >= emig_dt & df$timestamp <= emig_dt + 105 * 24 * 3600,]
+  if(nrow(df) == 0) return(df)
+  
+  # 1.1.2 Calculate local apparent solar time ----
+  df <- df %>%
+    dplyr::mutate(
+      utc_decimal_hour = lubridate::hour(timestamp) + lubridate::minute(timestamp) / 60 + lubridate::second(timestamp) / 3600,
+      days_in_year = dplyr::if_else(lubridate::leap_year(timestamp),366,365),
+      fractional_year = 2 * pi / days_in_year * (lubridate::yday(timestamp) - 1 + (utc_decimal_hour - 12) / 24),
+      equation_of_time_min = 229.18 * (0.000075 + 0.001868 * cos(fractional_year) - 0.032077 * sin(fractional_year) - 0.014615 * cos(2 * fractional_year) - 0.040849 * sin(2 * fractional_year)),
+      solar_time_min = (utc_decimal_hour * 60 + equation_of_time_min + 4 * location.long) %% 1440,
+      solar_decimal_hour = solar_time_min / 60,
+      solar_time_angle = 2 * pi * solar_decimal_hour / 24,
+      cos_diel = cos(solar_time_angle),
+      sin_time = sin(solar_time_angle),
+      individual.id = id,
+      dispersal_date = emig_dt,
+      days_since_emig = as.numeric(difftime(timestamp,emig_dt,units = "days"))
+    )
   
   # 1.1.1 Retain only the first fifteen weeks of dispersal ----
   df <- df[
