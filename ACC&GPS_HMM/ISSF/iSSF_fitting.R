@@ -25,9 +25,6 @@ library(mapview)
 library(ggnewscale)
 library(performance)
 
-setwd("/home/enourani/ownCloud - enourani@ab.mpg.de@owncloud.gwdg.de/Work/Projects/GE_ontogeny_of_soaring/R_files/")
-#setwd("/home/enourani/ownCloud/Work/Projects/GE_ontogeny_of_soaring/R_files/")
-
 wgs <- crs("+proj=longlat +datum=WGS84 +no_defs")
 
 #colors
@@ -36,48 +33,279 @@ clr_light <- oce::oceColorsPalette(100)[10]
 clr2 <- oce::oceColorsPalette(100)[80]
 
 #open data. data was prepared in 03_energy_landscape_modeling_method1.R. 
-data <- readRDS("all_inds_annotated_static_3yrs_apr23.rds") %>% 
-  mutate(animal_ID = as.numeric(as.factor(ind1)), #animal ID and stratum ID should be numeric
+data <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset/issf_generated_observed_location_annotated(2).rds") %>%
+  mutate(animal_ID = as.numeric(as.factor(individual.local.identifier)), #animal ID and stratum ID should be numeric
          stratum_ID = as.numeric(as.factor(stratum)))
 
 #look at correlation
 data %>% 
-  dplyr::select(c("TRI_100", "step_length", "weeks_since_emig", "ridge_100", "dem_100")) %>% 
-  correlate() #TRI and ridge = 0.44
+  dplyr::select(c("ruggedness_100m", "step_length_km", "weeks_since_emig", "elevation_100m")) %>% 
+  correlate() 
+
+# term             ruggedness_100m step_length_km weeks_since_emig elevation_100m
+# ruggedness_100m         NA           -0.0558          -0.00270          0.178 
+# step_length_m           -0.0558      NA                0.000641        -0.0545
+# weeks_since_emig        -0.00270      0.000641        NA                0.145 
+# elevation_100m           0.178       -0.0545           0.145           NA  
 
 ### calculate total hours of flight for the manuscript
-data %>% 
-  filter(used == 1) %>% 
-  mutate(year = year(timestamp),
-         yday = yday(timestamp),
-         hour = hour(timestamp)) %>% 
-  group_by(individual.local.identifier, year, yday, hour) #46,005 groups
+landing_sampling_summary_60 <- data %>%
+  dplyr::filter(used == 1L) %>%
+  dplyr::summarise(
+    n_landing_steps = dplyr::n_distinct(stratum),
+    total_sampled_hours = n_landing_steps
+  )
 
-# STEP 1: run the model ------------------------------------------------------------------ 
-#this is based on Muff et al:
-#https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
-
-TMB_struc <- glmmTMB(used ~ -1 + TRI_100_z * step_length_z * weeks_since_emig_z + 
-                       ridge_100_z * step_length_z * weeks_since_emig_z + (1|stratum_ID) + 
-                       (0 + ridge_100_z | animal_ID) + 
-                       (0 + TRI_100_z | animal_ID), 
-                     family = poisson, data = data, doFit = FALSE,
-                     #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
-                     map = list(theta = factor(c(NA, 1:2))), #2 is the n of random slopes
-                     #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
-                     start = list(theta = c(log(1e3), 0, 0))) #add a 0 for each random slope. in this case, 2
+print(landing_sampling_summary_60) # 5777 hours
 
 
-TMB_M <- glmmTMB:::fitTMB(TMB_struc)
+### standardize environmental covariates (hfi_mean_1000m, elevation_100m, ruggedness_100m, weeks_since_emig)
+variables_to_standardize_60 <- c(
+  "hfi_mean_1000m",
+  "elevation_100m",
+  "ruggedness_100m",
+  "weeks_since_emig",
+  "step_length_km"
+)
+
+required_model_variables_60 <- c(
+  "used",
+  "animal_ID",
+  "stratum_ID",
+  variables_to_standardize_60
+)
+
+missing_model_variables_60 <- setdiff(
+  required_model_variables_60,
+  names(data)
+)
+
+if (length(missing_model_variables_60) > 0L) {
+  stop(
+    "Missing variables: ",
+    paste(missing_model_variables_60, collapse = ", ")
+  )
+}
+
+
+# Retain complete and finite observations
+data_model_60 <- data %>%
+  dplyr::mutate(
+    used = as.integer(used),
+    animal_ID = factor(animal_ID),
+    stratum_ID = factor(stratum_ID)
+  ) %>%
+  dplyr::filter(
+    !is.na(used),
+    !is.na(animal_ID),
+    !is.na(stratum_ID),
+    dplyr::if_all(
+      dplyr::all_of(variables_to_standardize_60),
+      ~ !is.na(.x) & is.finite(.x)
+    )
+  ) %>%
+  dplyr::group_by(stratum_ID) %>%
+  dplyr::filter(
+    sum(used == 1L) == 1L,
+    sum(used == 0L) >= 1L
+  ) %>%
+  dplyr::ungroup()
+
+
+# Calculate and retain standardization parameters
+standardization_parameters_60 <- tibble::tibble(
+  variable = variables_to_standardize_60,
+  
+  center = vapply(
+    variables_to_standardize_60,
+    function(variable) {
+      mean(data_model_60[[variable]])
+    },
+    numeric(1)
+  ),
+  
+  scale = vapply(
+    variables_to_standardize_60,
+    function(variable) {
+      stats::sd(data_model_60[[variable]])
+    },
+    numeric(1)
+  )
+)
+
+if (
+  any(
+    !is.finite(standardization_parameters_60$scale) |
+    standardization_parameters_60$scale <= 0
+  )
+) {
+  stop(
+    "At least one variable has a non-finite or zero standard deviation."
+  )
+}
+
+print(standardization_parameters_60)
+
+
+# Create standardized variables
+data_model_60 <- data_model_60 %>%
+  dplyr::mutate(
+    hfi_mean_1000m_z =
+      (
+        hfi_mean_1000m -
+          standardization_parameters_60$center[
+            standardization_parameters_60$variable ==
+              "hfi_mean_1000m"
+          ]
+      ) /
+      standardization_parameters_60$scale[
+        standardization_parameters_60$variable ==
+          "hfi_mean_1000m"
+      ],
+    
+    elevation_100m_z =
+      (
+        elevation_100m -
+          standardization_parameters_60$center[
+            standardization_parameters_60$variable ==
+              "elevation_100m"
+          ]
+      ) /
+      standardization_parameters_60$scale[
+        standardization_parameters_60$variable ==
+          "elevation_100m"
+      ],
+    
+    ruggedness_100m_z =
+      (
+        ruggedness_100m -
+          standardization_parameters_60$center[
+            standardization_parameters_60$variable ==
+              "ruggedness_100m"
+          ]
+      ) /
+      standardization_parameters_60$scale[
+        standardization_parameters_60$variable ==
+          "ruggedness_100m"
+      ],
+    
+    weeks_since_emig_z =
+      (
+        weeks_since_emig -
+          standardization_parameters_60$center[
+            standardization_parameters_60$variable ==
+              "weeks_since_emig"
+          ]
+      ) /
+      standardization_parameters_60$scale[
+        standardization_parameters_60$variable ==
+          "weeks_since_emig"
+      ],
+    
+    step_length_z =
+      (
+        step_length_km -
+          standardization_parameters_60$center[
+            standardization_parameters_60$variable ==
+              "step_length_km"
+          ]
+      ) /
+      standardization_parameters_60$scale[
+        standardization_parameters_60$variable ==
+          "step_length_km"
+      ]
+  )
+
+# test 1 
+# STEP 1: fit the iSSF -----------------------------------------------------------
+
+TMB_struc <- glmmTMB::glmmTMB(
+  used ~ -1 +
+    
+    # HFI selection and its variation with step length and age
+    hfi_mean_1000m_z *
+    step_length_z *
+    weeks_since_emig_z +
+    
+    # Elevation selection and its variation with step length and age
+    elevation_100m_z *
+    step_length_z *
+    weeks_since_emig_z +
+    
+    # Ruggedness selection and its variation with step length and age
+    ruggedness_100m_z *
+    step_length_z *
+    weeks_since_emig_z +
+    
+    # Choice-set intercept
+    (1 | stratum_ID) +
+    
+    # Individual variation only in the HFI response
+    (0 + hfi_mean_1000m_z | animal_ID),
+  
+  family = poisson(link = "log"),
+  data = data_model_60,
+  doFit = FALSE,
+  
+  # Fix the stratum-intercept SD and estimate the HFI random-slope SD
+  map = list(
+    theta = factor(c(NA, 1L))
+  ),
+  
+  # theta[1]: fixed stratum-intercept SD
+  # theta[2]: initial HFI random-slope SD
+  start = list(
+    theta = c(log(1e3), 0)
+  )
+)
+
+
+# Check that the model contains exactly two random-effect parameters:
+# 1. stratum intercept SD;
+# 2. individual HFI-slope SD.
+stopifnot(
+  length(TMB_struc$parameters$theta) == 2L
+)
+
+
+# Fit the model
+TMB_M <- glmmTMB::fitTMB(TMB_struc)
+
 summary(TMB_M)
 
-saveRDS(TMB_M, file = "TMB_model.rds")
+saveRDS(
+  TMB_M,
+  file = "TMB_model_HFI_elevation_ruggedness.rds"
+)
 
-#extract coefficient estimates and confidence intervals
-confint(TMB_M)
 
-#extract individual-specific random effects:
-ranef(TMB_M)[[1]]$animal_ID
+
+
+# # STEP 1: run the model ------------------------------------------------------------------ 
+# #this is based on Muff et al:
+# #https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
+# 
+# TMB_struc <- glmmTMB(used ~ -1 + TRI_100_z * step_length_z * weeks_since_emig_z + 
+#                        ridge_100_z * step_length_z * weeks_since_emig_z + (1|stratum_ID) + 
+#                        (0 + ridge_100_z | animal_ID) + 
+#                        (0 + TRI_100_z | animal_ID), 
+#                      family = poisson, data = data, doFit = FALSE,
+#                      #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
+#                      map = list(theta = factor(c(NA, 1:2))), #2 is the n of random slopes
+#                      #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
+#                      start = list(theta = c(log(1e3), 0, 0))) #add a 0 for each random slope. in this case, 2
+# 
+# 
+# TMB_M <- glmmTMB:::fitTMB(TMB_struc)
+# summary(TMB_M)
+# 
+# saveRDS(TMB_M, file = "TMB_model.rds")
+# 
+# #extract coefficient estimates and confidence intervals
+# confint(TMB_M)
+# 
+# #extract individual-specific random effects:
+# ranef(TMB_M)[[1]]$animal_ID
 
 # STEP 2: model validation ------------------------------------------------------------------ 
 
@@ -89,11 +317,11 @@ performance_rmse(TMB_M)
 graph <- confint(TMB_M) %>% 
   as.data.frame() %>% 
   rownames_to_column(var = "Factor") %>% 
-  filter(!(Factor %in% c("weeks_since_emig_z", "Std.Dev.ridge_100_z|animal_ID", "Std.Dev.TRI_100_z|animal_ID.1")))
+  filter(!(Factor %in% c("weeks_since_emig_z", "Std.Dev.hfi_mean_1000m_z|animal_ID")))
 
 colnames(graph)[c(2,3)] <- c("Lower", "Upper") 
 
-labels <- rev(c("TRI", "Step length", "Distance to ridge", "TRI: Step length", "TRI: Week",
+labels <- rev(c("hfi_mean_1000m_z", "Step length", "Distance to ridge", "TRI: Step length", "TRI: Week",
                 "Step length: Week", "Step length: Distance to ridge", "Distance to ridge: Week",
                 "TRI: Step length: Week", "Distance to ridge: Step length: Week"))
 
@@ -118,6 +346,127 @@ coefs <- ggplot(graph, aes(x = Estimate, y = Factor)) +
 
 ggsave(coefs, filename = "/home/enourani/ownCloud - enourani@ab.mpg.de@owncloud.gwdg.de/Work/Projects/GE_ontogeny_of_soaring/paper_prep/tmb_figs/coeffs.pdf", 
        width = 7, height = 2, dpi = 300)
+
+
+
+# test 2 
+# Prepare movement variables ----------------------------------------------------
+
+data_model_60 <- data_model_60 %>%
+  dplyr::mutate(
+    cos_turning_angle = cos(turning_angle_rad)
+  )
+
+stopifnot(
+  all(is.finite(data_model_60$step_length_z)),
+  all(is.finite(data_model_60$cos_turning_angle)),
+  all(is.finite(data_model_60$weeks_since_emig_z))
+)
+
+
+# STEP 1: fit the iSSF -----------------------------------------------------------
+
+TMB_struc <- glmmTMB::glmmTMB(
+  used ~ -1 +
+    
+    # Mean HFI selection at mean age
+    hfi_mean_1000m_z +
+    
+    # Ontogenetic change in HFI selection
+    hfi_mean_1000m_z:weeks_since_emig_z +
+    
+    # Environmental control variables
+    elevation_100m_z +
+    ruggedness_100m_z +
+    
+    # Movement terms without interactions with age
+    step_length_z +
+    cos_turning_angle +
+    
+    # Choice-set intercept
+    (1 | stratum_ID) +
+    
+    # Individual variation only in the HFI response
+    (0 + hfi_mean_1000m_z | animal_ID),
+  
+  family = poisson(link = "log"),
+  data = data_model_60,
+  doFit = FALSE,
+  
+  # theta[1] = stratum-intercept SD, fixed at 1000
+  # theta[2] = individual HFI random-slope SD, freely estimated
+  map = list(
+    theta = factor(c(NA, 1L))
+  ),
+  
+  start = list(
+    theta = c(log(1e3), 0)
+  )
+)
+
+
+# Check the expected random-effect structure:
+# 1. stratum-intercept SD;
+# 2. individual HFI-slope SD.
+stopifnot(
+  length(TMB_struc$parameters$theta) == 2L
+)
+
+
+# Fit the model
+TMB_M <- glmmTMB::fitTMB(TMB_struc)
+
+summary(TMB_M)
+
+
+# Model controls
+stopifnot(
+  TMB_M$fit$convergence == 0L,
+  isTRUE(TMB_M$sdr$pdHess)
+)
+
+glmmTMB::diagnose(TMB_M)
+
+
+# Save model
+saveRDS(
+  TMB_M,
+  file = "TMB_model_HFI_age_elevation_ruggedness.rds"
+)
+
+
+# STEP 3: extract fixed-effect coefficients -------------------------------------
+
+fixed_effect_estimates_60 <- glmmTMB::fixef(TMB_M)$cond
+
+fixed_effect_confint_60 <- stats::confint(
+  TMB_M,
+  parm = "beta_",
+  method = "wald"
+) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("term")
+
+names(fixed_effect_confint_60)[2:3] <- c(
+  "confidence_low",
+  "confidence_high"
+)
+
+fixed_effect_table_60 <- tibble::tibble(
+  term = names(fixed_effect_estimates_60),
+  estimate = unname(fixed_effect_estimates_60)
+) %>%
+  dplyr::left_join(
+    fixed_effect_confint_60,
+    by = "term"
+  )
+
+print(fixed_effect_table_60)
+
+
+
+
+# fin test 2
 
 # STEP 4: PLOT individual-specific coefficients ------------------------------------------------------------------ 
 
