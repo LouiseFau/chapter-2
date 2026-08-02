@@ -3,10 +3,11 @@
 #' Authors : Louise Faure
 #' Date : 28.07.26
 #' Info : this script follow the gps_data_preparation.R script where data are thinned
-#' at at 60 minutes interval. 
-#' Purpose : 
-#' (1) generate random steps
-#' (2) annotates both random and observed data point with environmental covariates
+#' at a 60 minutes interval. 
+#' **Purpose :** 
+#' (1) identify turning angle and step lenght of landing steps 
+#' (2) generate landing random steps
+#' (3) annotates both random and observed data point with environmental covariates
 #' -----------------------------------------------------------------------------
 
 # libararies
@@ -22,12 +23,12 @@ library(fitdistrplus)
 library(terra)
 
 # Golden eagle gps data thinned at a 60 minute resolution
-ge_thinned <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds")
+ge_thinned <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_60_min_thinned.rds")
 
 
 #------------------------------------------------------------------------------- STEP 1: step selection prep- generate alternative steps ----
 #' **Steps**: 
-#' (i) calculate step lenght and turning angle for both landing and aerial persistence
+#' (i) calculate step lenght and turning angle for both landing 
 #' (ii) estimate step length and turning angle distributions
 #' (iii) produce alternative steps
 #' (iv) annotate with life stages.  
@@ -49,14 +50,14 @@ n_alt <- 50
 ge_thinned_prepared_60 <- if (inherits(ge_thinned, "sf")) {sf::st_drop_geometry(ge_thinned)} else {as.data.frame(ge_thinned)}
 
 required_columns_60 <- c("location.long","location.lat","timestamp","individual.local.identifier","behavior_binary","behavior_cluster","new_burst",
-  "burst_n","burst_id","n_points_burst","row_in_burst")
+  "burst_n","burst_id","n_points_burst","row_in_burst", "cos_diel", "sin_time")
 
 # Order observations and independently recalculate burst indices
 ge_thinned_prepared_60 <- ge_thinned_prepared_60 %>%
-  dplyr::mutate( behavior_binary =stringr::str_to_lower(as.character(behavior_binary)), behavior_cluster = as.integer(as.character(behavior_cluster))) %>%
+  dplyr::mutate( behavior_binary =stringr::str_to_lower(as.character(behavior_binary))) %>%
   dplyr::filter(
-    is.finite(location.long),
-    is.finite(location.lat),
+    is.finite(lon),
+    is.finite(lat),
     !is.na(timestamp),
     !is.na(individual.local.identifier),
     !is.na(burst_id)) %>%
@@ -128,8 +129,8 @@ track_list_60 <- lapply(
     }
     
     move::move(
-      x = track_data$location.long,
-      y = track_data$location.lat,
+      x = track_data$lon,
+      y = track_data$lat,
       time = track_data$timestamp,
       data = track_data,
       proj = wgs,
@@ -348,14 +349,11 @@ print(control_landing_distribution_60)
 # 2.2 Prepare landing movement distributions ----
 # Strictly positive step lengths
 landing_step_length_km_60 <- landing_distribution_steps_60$step_length_m / 1000
-
 landing_step_length_km_60 <- landing_step_length_km_60[ is.finite(landing_step_length_km_60) & landing_step_length_km_60 > 0]
 
 # Convert degrees to radians and wrap angles to [-pi, pi]
 landing_turning_angles_rad_60 <- landing_distribution_steps_60$turning_angle_deg * pi / 180
-
 landing_turning_angles_rad_60 <- atan2(sin(landing_turning_angles_rad_60),cos(landing_turning_angles_rad_60))
-
 landing_turning_angles_rad_60 <-landing_turning_angles_rad_60[is.finite(landing_turning_angles_rad_60)]
 
 # 2.3 Compare gamma and exponential step-length distributions ----
@@ -474,7 +472,6 @@ print(landing_angle_model_comparison_60)
 
 
 # 2.6 Plot the selected landing movement distributions ----
-
 # The 99.5% quantile is used only to improve visualization.
 # All observations were retained when fitting the distributions.
 landing_step_length_plot_max_60 <- stats::quantile(
@@ -557,8 +554,7 @@ landing_gamma_rate_60 <- unname(landing_gamma_fit_60$estimate[["rate"]])
 
 intermediate_dataset_directory <- paste0(
   "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/",
-  "CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset"
-)
+  "CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset")
 
 dir.create(intermediate_dataset_directory, recursive = TRUE, showWarnings = FALSE)
 set.seed(20260728)
@@ -567,67 +563,115 @@ set.seed(20260728)
 # Each landing row is the terrestrial endpoint.
 # The preceding row is the aerial origin and the row before that defines
 # the direction of movement preceding the landing step.
+# This step calculate the angle in UTM. 
 landing_generation_input_60 <- bursted_df %>%
-  dplyr::arrange(individual.local.identifier, burst_id,
-                 row_in_burst_calculated) %>%
-  dplyr::group_by(individual.local.identifier, burst_id) %>%
+  dplyr::arrange(
+    individual.local.identifier,
+    burst_id,
+    timestamp
+  ) %>%
+  dplyr::group_by(
+    individual.local.identifier,
+    burst_id
+  ) %>%
   dplyr::mutate(
-    prior_lon = dplyr::lag(location.long, 2),
-    prior_lat = dplyr::lag(location.lat, 2),
-    origin_lon = dplyr::lag(location.long),
-    origin_lat = dplyr::lag(location.lat),
-    timestamp_origin = dplyr::lag(timestamp)
+    timestamp_prior = dplyr::lag(timestamp,2),
+    timestamp_origin = dplyr::lag(timestamp,1),
+    timestamp_destination = timestamp,
+    
+    prior_lon = dplyr::lag(lon,2),
+    prior_lat = dplyr::lag(lat,2),
+    
+    origin_lon = dplyr::lag(lon,1),
+    origin_lat = dplyr::lag(lat,1),
+    
+    observed_destination_lon = lon,
+    observed_destination_lat = lat
   ) %>%
   dplyr::ungroup() %>%
   dplyr::filter(
     step_type == "landing",
-    !is.na(step_length_m), step_length_m > 0,
-    !is.na(turning_angle_deg),
+    !is.na(timestamp_prior),
+    !is.na(timestamp_origin),
     dplyr::if_all(
-      c(prior_lon, prior_lat, origin_lon, origin_lat,
-        location.long, location.lat),
+      dplyr::all_of(c(
+        "prior_lon","prior_lat",
+        "origin_lon","origin_lat",
+        "observed_destination_lon",
+        "observed_destination_lat"
+      )),
       is.finite
     )
-  ) %>%
-  dplyr::mutate(
-    landing_step_id = dplyr::row_number(),
-    stratum = paste(individual.local.identifier, burst_id,
-                    row_in_burst_calculated, sep = "_"),
-    timestamp_destination = timestamp
   )
 
-# 3.2 Project the three positions required for each landing step ----
-prior_xy_60 <- landing_generation_input_60 %>%
-  sf::st_as_sf(coords = c("prior_lon", "prior_lat"), crs = 4326) %>%
-  sf::st_transform(32632) %>%
-  sf::st_coordinates()
+# Project coordinates to the metric CRS defined for step generation ----
+project_xy_60 <- function(longitude,latitude) {
+  points <- sf::st_as_sf(
+    data.frame(longitude = longitude,latitude = latitude),
+    coords = c("longitude","latitude"),
+    crs = 4326
+  )
+  
+  sf::st_coordinates(
+    sf::st_transform(points,crs = 3035)
+  )
+}
 
-origin_xy_60 <- landing_generation_input_60 %>%
-  sf::st_as_sf(coords = c("origin_lon", "origin_lat"), crs = 4326) %>%
-  sf::st_transform(32632) %>%
-  sf::st_coordinates()
+prior_xy_60 <- project_xy_60(
+  landing_generation_input_60$prior_lon,
+  landing_generation_input_60$prior_lat
+)
 
-destination_xy_60 <- landing_generation_input_60 %>%
-  sf::st_as_sf(coords = c("location.long", "location.lat"), crs = 4326) %>%
-  sf::st_transform(32632) %>%
-  sf::st_coordinates()
+origin_xy_60 <- project_xy_60(
+  landing_generation_input_60$origin_lon,
+  landing_generation_input_60$origin_lat
+)
 
+destination_xy_60 <- project_xy_60(
+  landing_generation_input_60$observed_destination_lon,
+  landing_generation_input_60$observed_destination_lat
+)
+
+# Calculate observed movement geometry in metres and radians ----
 landing_generation_input_60 <- landing_generation_input_60 %>%
   dplyr::mutate(
-    prior_x_m = prior_xy_60[, 1],
-    prior_y_m = prior_xy_60[, 2],
-    origin_x_m = origin_xy_60[, 1],
-    origin_y_m = origin_xy_60[, 2],
-    observed_destination_x_m = destination_xy_60[, 1],
-    observed_destination_y_m = destination_xy_60[, 2],
-    previous_heading_rad = atan2(origin_y_m - prior_y_m,
-                                 origin_x_m - prior_x_m),
-    observed_heading_rad = atan2(observed_destination_y_m - origin_y_m,
-                                 observed_destination_x_m - origin_x_m),
-    turning_angle_rad = atan2(
-      sin(turning_angle_deg * pi / 180),
-      cos(turning_angle_deg * pi / 180)
+    prior_x_m = prior_xy_60[,1],
+    prior_y_m = prior_xy_60[,2],
+    
+    origin_x_m = origin_xy_60[,1],
+    origin_y_m = origin_xy_60[,2],
+    
+    observed_destination_x_m = destination_xy_60[,1],
+    observed_destination_y_m = destination_xy_60[,2],
+    
+    previous_heading_rad = atan2(
+      origin_y_m - prior_y_m,
+      origin_x_m - prior_x_m
+    ),
+    
+    observed_heading_rad = atan2(
+      observed_destination_y_m - origin_y_m,
+      observed_destination_x_m - origin_x_m
+    ),
+    
+    observed_step_length_m = sqrt(
+      (observed_destination_x_m - origin_x_m)^2 +
+        (observed_destination_y_m - origin_y_m)^2
+    ),
+    
+    observed_turning_angle_rad = atan2(
+      sin(observed_heading_rad - previous_heading_rad),
+      cos(observed_heading_rad - previous_heading_rad)
     )
+  ) %>%
+  dplyr::filter(
+    is.finite(observed_step_length_m),
+    observed_step_length_m > 0,
+    is.finite(observed_turning_angle_rad)
+  ) %>%
+  dplyr::mutate(
+    landing_id = dplyr::row_number(),
+    stratum = paste0("landing_",landing_id)
   )
 
 # Columns that remain constant within each choice set
@@ -644,9 +688,12 @@ landing_metadata_columns_60 <- c(
 observed_landing_locations_60 <- landing_generation_input_60 %>%
   dplyr::select(
     dplyr::any_of(landing_metadata_columns_60),
+    
     destination_x_m = observed_destination_x_m,
     destination_y_m = observed_destination_y_m,
-    step_length_m, turning_angle_rad,
+    
+    step_length_m = observed_step_length_m,
+    turning_angle_rad = observed_turning_angle_rad,
     heading_rad = observed_heading_rad
   ) %>%
   dplyr::mutate(
@@ -695,8 +742,8 @@ issf_generated_projected_60 <- dplyr::bind_rows(
 # Convert destination coordinates back to longitude and latitude
 issf_generated_sf_60 <- issf_generated_projected_60 %>%
   sf::st_as_sf(
-    coords = c("destination_x_m", "destination_y_m"),
-    crs = 32632,
+    coords = c("destination_x_m","destination_y_m"),
+    crs = 3035,
     remove = FALSE
   ) %>%
   sf::st_transform(4326)
@@ -717,22 +764,6 @@ issf_generated_observed_location <- issf_generated_sf_60 %>%
     dplyr::desc(used), alternative_id
   )
 
-# 3.6 Verify choice-set structure ----
-control_issf_strata_60 <- issf_generated_observed_location %>%
-  dplyr::group_by(stratum) %>%
-  dplyr::summarise(
-    n_rows = dplyr::n(),
-    n_used = sum(used),
-    n_available = sum(used == 0L),
-    .groups = "drop"
-  )
-
-stopifnot(
-  all(control_issf_strata_60$n_rows == n_alt_60 + 1L),
-  all(control_issf_strata_60$n_used == 1L),
-  all(control_issf_strata_60$n_available == n_alt_60)
-)
-
 print(
   issf_generated_observed_location %>%
     dplyr::summarise(
@@ -742,6 +773,8 @@ print(
       n_individuals = dplyr::n_distinct(individual.local.identifier)
     )
 )
+
+
 
 # 3.7 Save generated iSSF dataset ----
 saveRDS(
@@ -754,8 +787,6 @@ saveRDS(
 
 #------------------------------------------------------------------------------
 # STEP 4: Summary statistics ----
-
-
 # 4.1 Sampling effort per individual ----
 issf_generated_observed_location %>%
   dplyr::mutate(
@@ -814,15 +845,15 @@ issf_generated_observed_location_with_age <- issf_generated_observed_location %>
 # STEP 6: annotation: static --------------------------------------------------
 
 # all raster layers have the same CRS and resolution (100 m)
-human_footprint <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/human_footprint_index_building_pop_builtprop_100m.tif")
-ruggedness <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/ruggedness_TRI_100m.tif")
-dist_ridgeline <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/distance_to_ridgeline_100m.tif")
-landcover <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/landcover_100m.tif")
-elevation <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/dem_100m.tif")
+settlement_density <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/settlement_density_1km2_100m.tif")
+population_density <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/population_density_1km2_100m.tif")
+ruggedness <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/ruggedness_100m.tif")
+dist_ridgeline <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/distance_to_ridgeline_100m.tif")
+landcover <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/landcover_100m.tif")
+elevation <- terra::rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/elevation_100m.tif")
 
 terra::terraOptions(threads = 5)
 
-# 6.1 Function: proportions in the central cell and four rook neighbours ----
 # 6.1 Function: proportions in the central cell and four rook neighbours ----
 extract_landcover_5cells <- function(landcover_raster, points_raster) {
   central_cells <- terra::cellFromXY(
@@ -902,9 +933,7 @@ issf_annotated_list_60 <- lapply(seq_along(issf_annotation_list_60), function(i)
   df <- issf_annotation_list_60[[i]]
   if (nrow(df) == 0) return(df)
   
-  pts <- terra::vect(df, geom = c("location.long", "location.lat"),
-                     crs = "EPSG:4326")
-  pts_raster <- terra::project(pts, terra::crs(human_footprint))
+  pts_raster <- terra::vect(df,geom = c("destination_x_m","destination_y_m"),crs = "EPSG:3035")
   
   # Values under each observed or available destination
   df$elevation_100m <- terra::extract(elevation, pts_raster,
@@ -915,18 +944,25 @@ issf_annotated_list_60 <- lapply(seq_along(issf_annotation_list_60), function(i)
     dist_ridgeline, pts_raster, method = "simple", ID = FALSE
   )[, 1]
   
+  df$settlement_density <- terra::extract(
+    settlement_density,
+    pts_raster,
+    method = "simple",
+    ID = FALSE
+  )[,1]
+  
+  df$population_density <- terra::extract(
+    population_density,
+    pts_raster,
+    method = "simple",
+    ID = FALSE
+  )[,1]
+  
   # Land-cover proportions over the central cell and four neighbours
   landcover_5cells <- extract_landcover_5cells(landcover, pts_raster)
   df <- dplyr::bind_cols(df, landcover_5cells)
   
-  # Mean HFI inside a 1,000-m radius
-  buffers_1000m <- terra::buffer(pts_raster, width = 1000)
-  df$hfi_mean_1000m <- terra::extract(
-    human_footprint, buffers_1000m,
-    fun = mean, na.rm = TRUE, ID = FALSE
-  )[, 1]
-  
-  rm(pts, pts_raster, buffers_1000m, landcover_5cells)
+  rm(pts, pts_raster, landcover_5cells)
   gc()
   df
 })
@@ -949,7 +985,7 @@ issf_annotation_control_60 <- issf_generated_observed_location_annotated %>%
     n_rows = dplyr::n(),
     n_strata = dplyr::n_distinct(stratum),
     n_individuals = dplyr::n_distinct(individual.local.identifier),
-    missing_hfi = sum(is.na(hfi_mean_1000m)),
+    missing_hfi = sum(is.na(settlement_density)),
     missing_elevation = sum(is.na(elevation_100m)),
     missing_ruggedness = sum(is.na(ruggedness_100m)),
     missing_ridgeline = sum(is.na(distance_to_ridgeline_100m)),
@@ -962,8 +998,8 @@ print(issf_annotation_control_60)
 issf_within_stratum_control_60 <- issf_generated_observed_location_annotated %>%
   dplyr::group_by(stratum) %>%
   dplyr::summarise(
-    hfi_range = diff(range(hfi_mean_1000m, na.rm = TRUE)),
-    elevation_range = diff(range(elevation_100m, na.rm = TRUE)),
+    hfi_range = diff(range(settlement_density, na.rm = TRUE)),
+    elevation_range = diff(range(settlement_density, na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   dplyr::summarise(
@@ -978,6 +1014,7 @@ print(issf_within_stratum_control_60)
 # 6.6 Save annotated iSSF dataset ----
 saveRDS(
   issf_generated_observed_location_annotated,
-  file = "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset/issf_generated_observed_location_annotated.rds",
+  file = "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset/issf_generated_observed_location_annotated(2).rds",
   compress = "gzip"
 )
+
