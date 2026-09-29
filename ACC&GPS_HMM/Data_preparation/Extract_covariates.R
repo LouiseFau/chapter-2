@@ -1,17 +1,25 @@
 #' ----------------------------------------------------------------------------- 
-# Title: Extraction of covariates values one thinned dataset ----
+# Title: Extraction of covariates values to prepare ge dataset for the lmm ----
 #' Authors : Louise Faure
 #' Date : 16.07.26
-#' Info : this script follow the data_preparation.R script where data are thinned
+#' Info : this script follow the acc and gps data_preparation.R script where data 
+#' are thinned at two temporal scale (20 and 60 minutes)
 #' **Purpose** : extract covariates below each gps points. Covariates all have the same 
-#' crs and resolution. **Steps**:
-#' (1) read the 60-min dataset;
-#' (2) split the dataset by individual;
-#' (3) calculate diel temporal covariates;
-#' (4) create and project GPS points;
-#' (5) extract raster values below GPS locations;
-#' (6) recombine individuals;
-#' (7) export the resulting dataframe.
+#' crs and resolution. 
+#' **Steps**:
+#' (0) read the dataset and the rasters
+#' (1) prepare an extraction loop that takes each dataset in entry, then split each
+#' dataset per individuals, and then for each individuals:
+#'  (a) calculate diel temporal covariates;
+#'  (b) create and project GPS points;
+#'  (c) extract raster values below GPS locations;
+#'  (d) recombine individuals;
+#' (2) create a similarity index 
+#'    (a) load the natal territory polygon estimed by Brønnvik et al., 
+#'  Royal Society of Open Science, 2026
+#'    (b)  calculate 3 covariates to measure familiarity with anthropogenic 
+#'    settlements
+#' (3) clean the column name and export the resulting dataframes.
 #' -----------------------------------------------------------------------------
 
 
@@ -29,10 +37,14 @@ tz_loc <- "Europe/Zurich"
 terra::terraOptions(threads = 5)
 
 # golden eagle thinned data and rasters
-# for acc data
+# for acc data 60 min
 regular_60_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/GE_60_min_thinned_behavior_assigned2.rds") 
+# for acc data 20 minutes
+regular_60_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/HMM on ACC-classified behaviors/donnees intermediaire (2)/GE_20_min_thinned_behavior_assigned.rds")
 # for gps data 
 regular_60_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_60_min_thinned.rds")
+# for 20 minutes gps
+regular_60_sf <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/HMM/preparation HMM/donnees intermediaire/GE_20_min_thinned.rds")
 
 # topographic and humans covariates
 raster_directory <- "/Users/louisefaure/Desktop/dossier sans titre/Rasters"
@@ -236,7 +248,55 @@ GE_60_min_covariates <- regular_60_annotated_list %>%
   ) %>%
   as.data.frame()
 
-# 1.6 Retain relevant columns ----
+
+# 2. Prepare the similarity indexes ----
+#' We define three variable the measure similarity, "position_NT" which represent 
+#' for 0 to 1 the proportion of the natal territory cells that are less built than
+#' the compared point, "familiarity_NT" which is centered around 1 and 0 at both 
+#' extreme indicates whether the point is more or less built than the natal 
+#' territory, "excess_NT" which is the settlement density that has been never 
+#' experienced within the natal territory
+
+id_lookup_path <- "/Users/louisefaure/Desktop/dossier sans titre/donnees aigles gps burst/gps_bursts_raw_move2.rds"
+natal_polygon <- read_csv("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/natal_polygons/natal_polygon_edges.csv",show_col_types=FALSE)
+
+# 2.1 Build natal polygons (vertices in file order, EPSG:3035) and link Movebank id to names ----
+id_lookup <- move2::mt_track_data(readRDS(id_lookup_path)) %>%
+  transmute(id=as.character(individual_id),key=str_squish(as.character(individual_local_identifier)))
+
+NT_poly <- natal_polygon %>% transmute(x,y,id=as.character(id)) %>% distinct(id,x,y) %>%
+  st_as_sf(coords=c("x","y"),crs=4326) %>% st_transform(3035) %>%
+  group_by(id) %>% filter(n()>=3) %>% summarise(n_vertices=n(),do_union=FALSE) %>%
+  st_cast("LINESTRING") %>% st_cast("POLYGON") %>%
+  mutate(valid_raw=st_is_valid(.)) %>% st_make_valid() %>% st_collection_extract("POLYGON") %>%
+  inner_join(id_lookup,by="id") %>%
+  mutate(area_km2=as.numeric(st_area(.))/1e6,territory_id=sapply(st_equals_exact(.,.,par=1),min))
+
+# 2.2 Settlement density of all natal cells ----
+NT_cells <- terra::extract(settlement_density,terra::vect(NT_poly),exact=TRUE) %>%
+  setNames(c("row","value","fraction")) %>% filter(!is.na(value)) %>%
+  mutate(key=NT_poly$key[row],value=round(value,6))
+ctrl_poly <- NT_poly %>% st_drop_geometry() %>% arrange(area_km2) %>% mutate(small_lt_1km2=area_km2<1)
+
+# 2.3 Position, familiarity and excess for each GPS point ----
+nt_covariates <- function(b,v,w){
+  u <- sort(unique(v)); w <- as.numeric(tapply(w,factor(v,levels=u),sum)); w <- w/sum(w); b <- round(b,6)
+  pos <- c(0,cumsum(w))[findInterval(b,u,left.open=TRUE)+1]+0.5*coalesce(w[match(b,u)],0)
+  tibble(position_NT=pos,familiarity_NT=1-2*abs(pos-0.5),excess_NT=pmax(b-max(u),0))
+}
+
+GE_60_min_covariates <- GE_60_min_covariates %>% mutate(key=str_squish(individual.local.identifier)) %>%
+  group_by(key) %>%
+  group_modify(\(d,k){
+    ref <- NT_cells[NT_cells$key==k$key,]
+    if(nrow(ref)==0) return(mutate(d,position_NT=NA_real_,familiarity_NT=NA_real_,excess_NT=NA_real_))
+    bind_cols(d,nt_covariates(d$settlement_density,ref$value,ref$fraction))
+  }) %>% ungroup() %>%
+  left_join(ctrl_poly %>% select(key,territory_id),by="key") %>% select(-key) %>%
+  arrange(individual.local.identifier,timestamp) %>% as.data.frame()
+
+
+# 3. Retain relevant columns ----
 columns_to_keep_60 <- c(
   "sensor_type_id",
   "individual.local.identifier",
@@ -285,7 +345,17 @@ columns_to_keep_60 <- c(
   
   # human covariates
   "population_density",
-  "settlement_density")
+  "settlement_density", 
+  
+  # for control 20minutes points
+  "point_role", 
+  "transition_id", 
+  "pre20_lag_min", 
+  
+  #familiarity indexes
+  "position_NT",
+  "familiarity_NT",
+  "excess_NT")
 
 
 GE_60_min_covariates <- GE_60_min_covariates %>%
@@ -295,9 +365,11 @@ GE_60_min_covariates <- GE_60_min_covariates %>%
 
 
 
-# 1.7 Save the final dataset ----
-# change the name for saving acc data
+# 3. Save the final dataset ----
+# change the name depending on temporal resolution / type of data (acc versus gps)
 saveRDS(
   GE_60_min_covariates,
-  file = "/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_acc_60_min_covariates_hfi(2).rds",
+  file = "/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_gps_60_covariates_hfi.rds",
   compress = "gzip")
+
+
