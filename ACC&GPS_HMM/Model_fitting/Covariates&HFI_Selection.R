@@ -45,8 +45,8 @@ library(htmltools)  # for ploting results
 
 
 # acc and gps data weighted and standardized data ----
-GE_acc_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/acc_weighted(2).rds")
-GE_gps_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/gps_weighted(2).rds")
+GE_acc_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/acc_20_weighted.rds")
+GE_gps_hfi <- readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/gps_20_weighted.rds")
 
 #------------------------------------------------------------------------------- STEP 1: define behavioural backbone models ----
 #' **Steps:**
@@ -231,16 +231,23 @@ selected_backbone_models_60 <- stats::setNames(
 # 1.7 Selection of duration form ----
 print(selected_backbone_information_60 %>% dplyr::select(process,duration_form,AIC,delta_AIC,akaike_weight,singular),n = Inf,width = Inf)
 
+# for 60 minutes datasets
 # process                   duration_form    AIC delta_AIC akaike_weight singular
 # ACC_aerial_vs_terrestrial linear        12927.      2.75         0.202 FALSE   
 # ACC_feeding_vs_resting    linear         3683.      0            0.665 FALSE   
 # GPS_aerial_vs_terrestrial quadratic     14046.      0            0.978 FALSE 
 
+# for 20 minutes datasets
+# process                   duration_form    AIC delta_AIC akaike_weight singular
+# ACC_aerial_vs_terrestrial quadratic     25369.     0             1.000 FALSE   
+# ACC_feeding_vs_resting    linear         5185.     0.945         0.384 FALSE   
+# GPS_aerial_vs_terrestrial quadratic     28559.     0             1.000 FALSE  
+
 selected_backbone_formulas_60 <- list(
   GPS_aerial_vs_terrestrial =
-    remain_aerial ~ cos_diel_c + sin_diel_c + duration_z + (1 | individual_id),
+    remain_aerial ~ cos_diel_c + sin_diel_c + duration_z + duration_z2 + (1 | individual_id),
   ACC_aerial_vs_terrestrial =
-    remain_aerial ~ cos_diel_c + sin_diel_c + duration_z + (1 | individual_id),
+    remain_aerial ~ cos_diel_c + sin_diel_c + duration_z + duration_z2 + (1 | individual_id),
   ACC_feeding_vs_resting =
     feeding_vs_resting ~ cos_diel_c + sin_diel_c + duration_z + (1 | individual_id))
 
@@ -1613,7 +1620,15 @@ acc_marginal_probability_summary_60 <- acc_state_probabilities_60 %>%
       stats::qlogis(probability_Q05))
 
 print(acc_marginal_probability_summary_60,n = Inf,width = Inf)
+
+# for 60 minutes dataset
 # state   probability_Q05 probability_Q95 probability_difference_Q95_Q05 Q95_Q05_log_odds
-#   1 aerial           0.371           0.384                         0.0135            0.0576
-# 2 feeding          0.0556          0.0460                       -0.00960          -0.200 
-# 3 resting          0.573           0.570                        -0.00393          -0.0161
+# aerial           0.371           0.384                         0.0135            0.0576
+# feeding          0.0556          0.0460                       -0.00960          -0.200 
+# resting          0.573           0.570                        -0.00393          -0.0161
+
+# for 20 minutes datasets
+# state   probability_Q05 probability_Q95 probability_difference_Q95_Q05 Q95_Q05_log_odds
+# aerial           0.475           0.497                         0.0212            0.0848
+# feeding          0.0381          0.0319                       -0.00623          -0.185 
+# resting          0.486           0.471                        -0.0149           -0.0599
