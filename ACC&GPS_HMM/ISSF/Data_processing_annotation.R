@@ -8,6 +8,7 @@
 #' (1) identify turning angle and step lenght of landing steps 
 #' (2) generate landing random steps
 #' (3) annotates both random and observed data point with environmental covariates
+#' (4) calculate distance to natal conditions for both random and observed data points
 #' -----------------------------------------------------------------------------
 
 # libararies
@@ -777,17 +778,14 @@ print(
 
 
 # 3.7 Save generated iSSF dataset ----
-saveRDS(
-  issf_generated_observed_location,
-  file = file.path(
-    intermediate_dataset_directory,
-    "issf_generated_observed_location.rds"
-  )
-)
+saveRDS(issf_generated_observed_location,file = file.path(intermediate_dataset_directory,
+    "issf_generated_observed_location.rds"))
 
 #------------------------------------------------------------------------------
 # STEP 4: Summary statistics ----
 # 4.1 Sampling effort per individual ----
+issf_generated_observed_location <- readRDS("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/Results/Intermediate_dataset/issf_generated_observed_location.rds")
+  
 issf_generated_observed_location %>%
   dplyr::mutate(
     yr_mn = paste(lubridate::year(timestamp_destination),
@@ -824,6 +822,7 @@ graphics::barplot(
   col = as.factor(mn_summary_60$individual.local.identifier),
   beside = FALSE
 )
+
 
 
 # STEP 5: annotation: life stages ---------------------------------------------
@@ -1010,6 +1009,102 @@ issf_within_stratum_control_60 <- issf_generated_observed_location_annotated %>%
   )
 
 print(issf_within_stratum_control_60)
+
+
+#------------------------------------------------------------------------------ STEP 7: annotation: distance to natal conditions ----
+#' Three point-level covariables comparing settlement density below each destination
+#' (observed and available) to the distribution of settlement density in the
+#' individual's natal territory (NT):
+#'  - position_NT    : share of the NT less built than the point (ties count half), 0 to 1
+#'  - familiarity_NT : 1 at the centre of the NT distribution, 0 at both extremes
+#'  - excess_NT      : settlement density above the NT maximum (0 within the NT range)
+#' NT distribution = all raster cells of the polygon, weighted by the cell fraction inside.
+#' Objects starting with ctrl_ are checks only and can be removed afterwards.
+
+id_lookup_path <- "/Users/louisefaure/Desktop/dossier sans titre/donnees aigles gps burst/gps_bursts_raw_move2.rds"
+natal_polygon <- readr::read_csv("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/natal_polygons/natal_polygon_edges.csv",show_col_types=FALSE)
+
+# 7.1 Build natal polygons (vertices in file order, EPSG:3035) and link Movebank id to names ----
+id_lookup <- move2::mt_track_data(readRDS(id_lookup_path)) %>%
+  dplyr::transmute(id=as.character(individual_id),key=stringr::str_squish(as.character(individual_local_identifier)))
+
+NT_poly <- natal_polygon %>% dplyr::transmute(x,y,id=as.character(id)) %>% dplyr::distinct(id,x,y) %>%
+  sf::st_as_sf(coords=c("x","y"),crs=4326) %>% sf::st_transform(3035) %>%
+  dplyr::group_by(id) %>% dplyr::filter(dplyr::n()>=3) %>% dplyr::summarise(n_vertices=dplyr::n(),do_union=FALSE) %>%
+  sf::st_cast("LINESTRING") %>% sf::st_cast("POLYGON") %>%
+  dplyr::mutate(valid_raw=sf::st_is_valid(.)) %>% sf::st_make_valid() %>% sf::st_collection_extract("POLYGON") %>%
+  dplyr::inner_join(id_lookup,by="id") %>%
+  dplyr::mutate(area_km2=as.numeric(sf::st_area(.))/1e6,territory_id=sapply(sf::st_equals_exact(.,.,par=1),min))
+
+ctrl_poly <- NT_poly %>% sf::st_drop_geometry() %>% dplyr::arrange(area_km2) %>% dplyr::mutate(small_lt_1km2=area_km2<1)
+ctrl_territory <- ctrl_poly %>% dplyr::group_by(territory_id) %>% dplyr::filter(dplyr::n()>1) %>%
+  dplyr::summarise(n_ind=dplyr::n(),area_km2=dplyr::first(area_km2),individuals=paste(key,collapse=" | "))
+ctrl_match <- tibble::tibble(key=stringr::str_squish(unique(issf_generated_observed_location_annotated$individual.local.identifier))) %>%
+  dplyr::mutate(has_polygon=key %in% NT_poly$key)
+
+# 7.2 Settlement density of all natal cells ----
+NT_cells <- terra::extract(settlement_density,terra::vect(NT_poly),exact=TRUE) %>%
+  stats::setNames(c("row","value","fraction")) %>% dplyr::filter(!is.na(value)) %>%
+  dplyr::mutate(key=NT_poly$key[row],value=round(value,6))
+
+ctrl_cells <- NT_cells %>% dplyr::group_by(key) %>%
+  dplyr::summarise(n_cells=sum(fraction),natal_mean_NT=stats::weighted.mean(value,fraction),
+                   prop_zero=stats::weighted.mean(value==0,fraction),max=max(value))
+
+# 7.3 Position, familiarity and excess for each observed and available destination ----
+nt_covariates <- function(b,v,w){
+  u <- sort(unique(v)); w <- as.numeric(tapply(w,factor(v,levels=u),sum)); w <- w/sum(w); b <- round(b,6)
+  pos <- c(0,cumsum(w))[findInterval(b,u,left.open=TRUE)+1]+0.5*dplyr::coalesce(w[match(b,u)],0)
+  tibble::tibble(position_NT=pos,above_natal_NT=2*pmax(pos-0.5,0),excess_NT=pmax(b-max(u),0))
+}
+
+issf_generated_observed_location_annotated <- issf_generated_observed_location_annotated %>%
+  dplyr::mutate(key=stringr::str_squish(individual.local.identifier)) %>%
+  dplyr::group_by(key) %>%
+  dplyr::group_modify(\(d,k){
+    ref <- NT_cells[NT_cells$key==k$key,]
+    if(nrow(ref)==0) return(dplyr::mutate(d,position_NT=NA_real_,familiarity_NT=NA_real_,excess_NT=NA_real_))
+    dplyr::bind_cols(d,nt_covariates(d$settlement_density,ref$value,ref$fraction))
+  }) %>% dplyr::ungroup() %>%
+  dplyr::left_join(ctrl_poly %>% dplyr::select(key,territory_id),by="key") %>%
+  dplyr::left_join(ctrl_cells %>% dplyr::select(key,natal_mean_NT),by="key") %>%
+  dplyr::mutate(above_natal_mean=pmax(settlement_density-natal_mean_NT,0)) %>% dplyr::select(-key) %>%
+  dplyr::arrange(individual.local.identifier,timestamp_origin,dplyr::desc(used),alternative_id) %>%
+  as.data.frame()
+
+# 7.4 Controls ----
+ctrl_cov <- issf_generated_observed_location_annotated %>% dplyr::group_by(individual.local.identifier) %>%
+  dplyr::summarise(n=dplyr::n(),na_position=sum(is.na(position_NT)),
+                   position_mean=mean(position_NT,na.rm=TRUE), above_natal_mean=mean(above_natal_NT,na.rm=TRUE),
+                   prop_excess=mean(excess_NT>0,na.rm=TRUE))
+
+# variation within strata (a covariate with no within-stratum variation is not estimable)
+ctrl_strata <- issf_generated_observed_location_annotated %>% dplyr::group_by(stratum) %>%
+  dplyr::summarise(dplyr::across(c(settlement_density,position_NT,above_natal_NT,excess_NT),
+                                 \(x) diff(range(x,na.rm=TRUE)))) %>%
+  dplyr::summarise(dplyr::across(-stratum,\(x) mean(is.finite(x) & x>0)))
+
+# correlation between covariates, within strata only (the variation the iSSF uses)
+ctrl_cor <- issf_generated_observed_location_annotated %>% dplyr::group_by(stratum) %>%
+  dplyr::mutate(dplyr::across(c(settlement_density,position_NT,above_natal_NT,excess_NT,
+                                elevation_100m,ruggedness_100m),\(x) x-mean(x,na.rm=TRUE))) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(settlement_density,position_NT,above_natal_NT,excess_NT,elevation_100m,ruggedness_100m) %>%
+  stats::cor(method="spearman",use="pairwise.complete.obs") %>% round(2)
+
+View(ctrl_poly); View(ctrl_territory); dplyr::filter(ctrl_match,!has_polygon); View(ctrl_cells); View(ctrl_cov); ctrl_strata; ctrl_cor
+# rm(list=ls(pattern="^ctrl_"))
+
+#View(ctrl_poly); View(ctrl_territory); dplyr::filter(ctrl_match,!has_polygon); View(ctrl_cells); View(ctrl_cov); ctrl_strata; ctrl_cor
+#'settlement_density position_NT above_natal_NT excess_NT elevation_100m ruggedness_100m
+#'settlement_density               1.00        0.74           0.76      0.41          -0.54           -0.22
+#'position_NT                      0.74        1.00           0.92      0.14          -0.59           -0.20
+#'above_natal_NT                   0.76        0.92           1.00      0.20          -0.56           -0.20
+#'excess_NT                        0.41        0.14           0.20      1.00          -0.16           -0.10
+#'elevation_100m                  -0.54       -0.59          -0.56     -0.16           1.00            0.11
+#'ruggedness_100m                 -0.22       -0.20          -0.20     -0.10           0.11            1.00
+
+
 
 # 6.6 Save annotated iSSF dataset ----
 saveRDS(
