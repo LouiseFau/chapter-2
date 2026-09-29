@@ -377,8 +377,7 @@ print(table(dispersal_data$behavior_binary, useNA = "ifany"))
 
 
 
-#'------------------------------------------------------------------------------
-# Step 3. Data thining ----
+#'------------------------------------------------------------------------------Step 3. Data thining ----
 #' 
 #' (1) inspect raw GPS sampling intervals;
 #' (2) create one high-resolution dataset at 20 min;
