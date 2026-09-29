@@ -2,15 +2,21 @@
 # Title : download and cleaned data from Movebank ----
 #'Author : Louise Faure
 #'Date: 21.07.2026
-#'Adapted from Hester Bronnvik 00_access_data.R
-#'Purpose: download the gps burst data from movebank for the individuals that 
+#'Adapted from Hester Bronnvik 00_access_data.R, with a more strict rules in DOP
+#'value acceptability, e.i., high DOP values where removed.
+#'
+#'**Purpose:** download the gps burst data from movebank for the individuals that 
 #'emigrate and which behaviors have been classified by Julia Hatzl and Louise 
 #'Faure (who reuse and adpated J.H random forest script). These data will be 
 #'associated to the acc classified beahviors in "prepare_data.R" script.
+#'
 #'**Steps**:
 #'(1) obtain individual list of names
 #'(2) define the period of extraction 
-#'(3) donwload the data 
+#'  (a) by attributing a dispersal date based on estimated by Brønnvik et al., 
+#'  Royal Society of Open Science, 2026
+#'  (b) by taking all the point in the first 15 week after that date
+#'(3) download the data 
 #'(4) clean the data 
 #'  (a) remove empty geometry or missing latitude / longitude
 #'  (b) date beyond the extraction period 
@@ -36,16 +42,11 @@ movebank_username <- readline(prompt = "Nom d'utilisateur Movebank : ")
 movebank_connection <- movebank_handle(username = movebank_username)
 
 #' output dir
-output_dir <- paste0("/Users/louisefaure/Desktop/dossier sans titre/", "donnees aigles gps burst")
+output_dir <- paste0("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/Individuals_raw")
 dir.create(output_dir,recursive = TRUE,showWarnings = FALSE)
 
 #' golden eagle dataset
 emig_dat <- readRDS('/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds')
-non_classified_birds_dir <- file.path(
-  "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel",
-  "THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES",
-  "Individus non classifies/rf_assigned")
-julia_classified_birds_file <- read.csv("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/classified_acc_data/2024_01_24_alldata_allbirds_merged_rf_raw.csv")
 
 #' general parameters
 gps_dop_max <- 10 # Maximum accepted GPS dilution of precision
@@ -56,33 +57,11 @@ tz_loc <- "Europe/Zurich"
 
 
 # 1. Obtain the list of individuals ----
-classified_names <- julia_classified_birds_file |> transmute( individual.local.identifier = as.character(individualID))
-non_classified_names <- list.files(
-  non_classified_birds_dir,
-  pattern = "\\.csv$",
-  full.names = TRUE
-) |>
-  map_dfr(
-    \(file) read_csv(file, show_col_types = FALSE) |>
-      transmute(
-        individual.local.identifier =
-          as.character(individualID)))
-
-individuals <- bind_rows(
-  classified_names,
-  non_classified_names
-) |>
-  filter(
-    !is.na(individual.local.identifier),
-    individual.local.identifier != ""
-  ) |>
-  distinct(individual.local.identifier) |>
-  arrange(individual.local.identifier)
-
-stopifnot(nrow(individuals) == 66L)
+# Select all the individuals that have a dispersal date. 
 
 
 # 2. Define the temporal extraction period ----
+# Select all the location points within the pre-dispersal phase and the first 15 weeks of dispersal.
 extraction_periods <- individuals |>
   left_join(
     emig_dat |>
