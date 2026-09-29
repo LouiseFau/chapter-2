@@ -1746,8 +1746,9 @@ cat(
 
 
 # 4.2 Select one GPS point per 60-min interval ----
-resolution_min_60 <- 60
-tolerance_min_60 <- 10
+# attention paramètres ajusté pour le dataset à 20 minutes
+resolution_min_60 <- 20
+tolerance_min_60 <- 5
 min_points_per_burst <- 3L
 
 
@@ -2208,7 +2209,7 @@ saveRDS(
   regular_60_sf,
   file.path(
     output_dir,
-    "GE_60_min_thinned_behavior_assigned2.rds"
+    "GE_20_min_thinned_behavior_assigned.rds"
   ),
   compress = "gzip"
 )
