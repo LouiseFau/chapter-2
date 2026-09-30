@@ -27,9 +27,9 @@ library(sf)
 # Input data ----
 input_datasets <- list(
   GPS_20 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_gps_20_covariates_hfi.rds"),
-  GPS_60 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_gps_60_min_covariates_hfi(2).rds"),
+  GPS_60 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_gps_60_covariates_hfi.rds"),
   ACC_20 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_acc_20_covariates_hfi.rds"),
-  ACC_60 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_acc_60_min_covariates_hfi.rds"))
+  ACC_60 = readRDS("/Users/louisefaure/Desktop/dossier sans titre/donnees filtree/GE_acc_60_covariates_hfi.rds"))
 
 emig_dates_raw <- readRDS( "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/DONNEES AIGLES/emigration dates/emigration_dates_20250417.rds")
 
@@ -55,11 +55,13 @@ required_numeric_variables <- c(
   "cos_diel","sin_time","ruggedness_100m","slope_100m",
   "distance_to_ridgeline_100m","elevation_100m","prop_forest_5cells",
   "prop_low_vegetation_5cells","prop_rocky_terrain_5cells",
-  "prop_other_5cells","settlement_density","population_density")
+  "prop_other_5cells","settlement_density","population_density", "position_NT",
+  "above_natal_NT","excess_NT","territory_id")
 
+# territory_id is an identifier (random effect): required but not standardized
 environmental_hfi_variables <- setdiff(
   required_numeric_variables,
-  c("age_since_emig_days","age_since_emig_weeks","aerial_duration_min","cos_diel","sin_time"))
+  c("age_since_emig_days","age_since_emig_weeks","aerial_duration_min","cos_diel","sin_time","territory_id"))
 
 gps_dataset_names <- dataset_parameters$dataset[dataset_parameters$data_type == "GPS"]
 acc_dataset_names <- dataset_parameters$dataset[dataset_parameters$data_type == "ACC"]
@@ -313,7 +315,7 @@ summarise_individual_transitions <- function(data,dataset_name) {
     )}
 
 transitions_by_individual_list <- Map(summarise_individual_transitions,
-  aerial_transitions_raw,names(aerial_transitions_raw))
+                                      aerial_transitions_raw,names(aerial_transitions_raw))
 
 transitions_by_individual <- dplyr::bind_rows(
   transitions_by_individual_list) %>%
@@ -507,6 +509,7 @@ library(DHARMa)
 library(spdep)
 
 # 4.1 Prepare model data ----
+gps_20_weighted <- weighted_datasets$GPS_20
 weight_variable_20 <- intersect(c("weight","individual_weight"),names(gps_20_weighted))[1]
 if(is.na(weight_variable_20)) stop("No weight or individual_weight column found.")
 
@@ -544,7 +547,7 @@ model_data_20 <- gps_20_weighted %>%
       c(
         remain_aerial,cos_time_c,sin_time_c,duration_z,
         settlement_density_z,elevation_100m_z,ruggedness_100m_z,
-       lon,lat,model_weight
+        lon,lat,model_weight
       ),
       is.finite
     )
