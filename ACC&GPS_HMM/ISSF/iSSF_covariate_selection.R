@@ -91,6 +91,7 @@ data_model_60 <- data_model_60 %>%
 #' (iii) extract model formula, AIC and population HFI estimates;
 #' (iv) calculate population-level relative selection strength and its CI;
 #' (v) display and save the comparison table, highlighting the best-AIC model.
+#' (vi) validate with RMSE and export best model
 
 # Parameters ----
 rss_confidence_level_60 <- 0.95
@@ -142,16 +143,8 @@ issf_model_comparison_60 <- purrr::imap_dfr(issf_models_60,~ extract_issf_inform
   dplyr::arrange(AIC) %>%
   dplyr::select(model,AIC,delta_AIC,hfi_coefficient,hfi_standard_error,RSS_q95_vs_q05,RSS_confidence_low,RSS_confidence_high,RSS_CI_95,best_AIC)
 
-print(issf_model_comparison_60,n = Inf)
-# model                                    AIC delta_AIC hfi_coefficient hfi_standard_error RSS_q95_vs_q05 RSS_confidence_low RSS_confidence_high RSS_CI_95            best_AIC
-# if_elevation_open_habitat_ruggedness 132636.        0           -0.899             0.0890         0.0957             0.0607              0.151  0.096 [0.061; 0.151] TRUE    
-# ic_elevation_ruggedness              132848.      211.          -0.919             0.0892         0.0909             0.0576              0.143  0.091 [0.058; 0.143] FALSE   
-# ig_elevation_ridgeline               132879.      242.          -0.967             0.0927         0.0802             0.0499              0.129  0.080 [0.050; 0.129] FALSE   
-# ib_ruggedness                        133104.      468.          -1.33              0.103          0.0314             0.0185              0.0533 0.031 [0.019; 0.053] FALSE   
-# ie_elevation_open_habitat            133179.      543.          -1.06              0.0939         0.0625             0.0387              0.101  0.063 [0.039; 0.101] FALSE   
-# ia_elevation                         133315.      678.          -1.06              0.0932         0.0631             0.0391              0.102  0.063 [0.039; 0.102] FALSE   
-# id_elevation_forest                  133315.      678.          -1.06              0.0936         0.0637             0.0394              0.103  0.064 [0.039; 0.103] FALSE   
-# null                                 133551.      915.          -1.45              0.107          0.0225             0.0130              0.0388 0.023 [0.013; 0.039] FALSE
+print(issf_model_comparison_60,n = Inf) # best model is elevation_open_habitat_ruggedness, hfi coeff = -2.12
+
 
 # 2.4 remove one by one the variables from the best model and check their influence on the hfi_coefficient  ----
 best_model_name_60 <- issf_model_comparison_60 %>%
@@ -221,60 +214,11 @@ confint(best_model_60)
 # 2.7.2 Extract individual-specific random effects ----
 ranef(best_model_60)[[1]]$animal_ID
 
-
-#------------------------------------------------------------------------------- STEP 3 : familiarity and model validation
-#' **Steps**:
-#' (i) check which familiarity coefficient improve the AIC of the models, between
-#' position_NT_z which measure whether the new cells is more or less dense in 
-#' settlement compared to the natal territory (NT), and familiarity which measure the 
-#' distance from the distribution of settlement density in NT, and excess which 
-#' measure when newly level of densities are encountered. 
-#' (ii) validation using RMSE
-
-# 3.1 Familiarity index selection ----
-data_familiarity_60 <- data_model_60 %>%
-  dplyr::filter(dplyr::if_all(dplyr::all_of(paste0(familiarity_covariates_60,"_z")),~ !is.na(.x) & is.finite(.x))) %>%
-  dplyr::group_by(stratum_ID) %>%
-  dplyr::filter(sum(used == 1L) == 1L,sum(used == 0L) >= 1L) %>%
-  dplyr::ungroup()
-
-familiarity_formulas_60 <- list(
-  best_model = best_formula_60,
-  with_position = update(best_formula_60,. ~ . + position_NT_z),
-  with_familiarity = update(best_formula_60,. ~ . + above_natal_NT_z),
-  with_excess = update(best_formula_60,. ~ . + excess_NT_z))
-
-familiarity_models_60 <- purrr::map(familiarity_formulas_60,fit_issf_model_60,data = data_familiarity_60)
-
-familiarity_terms_60 <- c(best_model = NA_character_,with_position = "position_NT_z",with_familiarity = "above_natal_NT_z",with_excess = "excess_NT_z")
-
-extract_familiarity_information_60 <- function(model_object,model_name){
-  coefficient_table <- summary(model_object)$coefficients$cond
-  term_name <- familiarity_terms_60[[model_name]]
-  has_term <- !is.na(term_name) && term_name %in% rownames(coefficient_table)
-  tibble::tibble(
-    model = model_name,
-    familiarity_term = dplyr::coalesce(term_name,"none"),
-    AIC = stats::AIC(model_object),
-    familiarity_coefficient = if(has_term) unname(coefficient_table[term_name,"Estimate"]) else NA_real_,
-    familiarity_standard_error = if(has_term) unname(coefficient_table[term_name,"Std. Error"]) else NA_real_,
-    hfi_coefficient = unname(coefficient_table["settlement_density_z","Estimate"]),
-    hfi_standard_error = unname(coefficient_table["settlement_density_z","Std. Error"]),
-    random_slope_sd = as.numeric(attr(glmmTMB::VarCorr(model_object)$cond$animal_ID,"stddev")[1]))
-}
-
-familiarity_model_comparison_60 <- purrr::imap_dfr(familiarity_models_60,~ extract_familiarity_information_60(model_object = .x,model_name = .y)) %>%
-  dplyr::mutate(delta_AIC = AIC - min(AIC),best_AIC = AIC == min(AIC),
-                familiarity_CI_95 = sprintf("%.3f [%.3f; %.3f]",familiarity_coefficient,familiarity_coefficient - 1.96 * familiarity_standard_error,familiarity_coefficient + 1.96 * familiarity_standard_error),
-                random_slope_change_percent = 100 * (random_slope_sd - random_slope_sd[model == "best_model"]) / random_slope_sd[model == "best_model"]) %>%
-  dplyr::arrange(AIC) %>%
-  dplyr::select(model,familiarity_term,AIC,delta_AIC,familiarity_coefficient,familiarity_standard_error,familiarity_CI_95,hfi_coefficient,random_slope_sd,random_slope_change_percent,best_AIC)
-
-print(familiarity_model_comparison_60,n = Inf)
-
 # 3.2 Model validation obtained by calculating the RMSE ----
-performance::performance_rmse(best_model_60)
+performance::performance_rmse(best_model_60) # 0.13
 
+# Export best model 
+saveRDS(list(model = best_model_60, model_name = best_model_name_60, formula = best_formula_60, standardization = standardization_parameters_60, hfi_quantiles = controle_hfi_quantiles_60), file = "/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/THESE/CHAPITRE 2/git/chapter-2/ACC&GPS_HMM/ISSF/issf_best_model_60.rds")
 
 # VISUALISATION n°1 : PLOT coefficient estimates -------------------------------------------------------------------------------------------------------- 
 graph_60 <- confint(best_model_60) %>%
