@@ -154,16 +154,18 @@ writeRaster(exp(log_rss_by_date),file.path(output_dir_ch,"issf_rss_by_date.tif")
 #   - centre: Switzerland. Background = hillshade (black to white) under a semi-transparent elevation
 #     layer (light to dark brown); over it, the RSS reduction due to buildings,
 #       rss_change = 1 - RSS_date / RSS_reference = 1 - exp(eta_date - eta_reference),
-#     in grey with an opacity equal to the reduction (0 transparent, 1 opaque); then lakes, main rivers,
-#     the Swiss border, the nests and the main cities;
-#   - right: a single bar, the area (km2) of cells with rss_change > `bar_threshold`, growing over time;
+#     in purple with an opacity equal to the reduction (0 transparent, 1 opaque); then lakes, main rivers,
+#     the Swiss border, the nests (white) and the main cities;
+#   - right: a single purple bar, the area (km2) of cells with rss_change > `bar_threshold`, growing over time;
 #   - bottom: a timeline with one tick per date and a cursor on the current date.
 # Reference scenario (`reference_scenario`):
 #   "no_building": the same landscape with the settlement density set to 0 everywhere. The 1918 frame then
 #                  already shows the cells lost to the buildings that existed in 1918, and the later
 #                  frames add the losses of 1918-1945, 1945-1960, ... on top of them (cumulative);
 #   "1918":        the 1918 landscape itself. The 1918 frame is empty and the frames show the loss since 1918.
-# Frames are saved as PNG, one per date, then assembled into a GIF and an MP4.
+# Frames are saved as PNG, one per date, then assembled into a GIF and an MP4. The frame folder is emptied
+# before the frames are generated, so that a PNG left by a previous run (other title, other colours) can
+# never be assembled with the new ones.
 library(patchwork)
 library(gifski)
 library(av)
@@ -178,18 +180,20 @@ bar_threshold <- 0.7              # RSS change above which a cell counts in the 
 legend_position <- c(0.99,0.02)   # colour bar anchor (its bottom-right corner) inside the map panel, 0-1 from bottom-left
 reference_text <- if(reference_scenario=="no_building") "relative to a landscape without buildings" else sprintf("since the reference year %d",dates[1])
 legend_title <- sprintf("Reduction in relative selection strength (%%)\n%s",reference_text)
-bar_title <- sprintf("Cumulative area (km²)\nwhere relative selection\nstrength has fallen by\nmore than %d %%,\n%s",round(100*bar_threshold),reference_text)
+bar_title <- "Cumulative loss\nof space (km²)"   # the threshold and the reference are given in the map legend
+bar_title_size <- 3.8             # ggplot text size of the bar titles (mm; 3.8 ~ 11 pt)
 include_reference_frame <- TRUE   # TRUE: first frame = 1918; FALSE: start at 1945
 display_factor <- 2               # aggregation factor for drawing only (2 = 200 m); 1 draws at 100 m, slower
 frame_delay <- 1.2                # seconds per frame
 font_family <- "Times New Roman"  # all text; "Times" also works on macOS
-clr_loss <- "grey45"              # medium grey for the RSS reduction on the map (transparent -> this grey)
-clr_bar <- "grey35"               # medium-dark grey for the bar and the timeline cursor
+clr_purple <- "#6A3D9A"           # purple shared by the RSS reduction on the maps (STEP 3 and 4) and the STEP 3 bar
+clr_loss <- clr_purple            # RSS reduction on the map (transparent -> this colour)
+clr_bar <- clr_purple             # bar and timeline cursor
 clr_text <- "grey25"              # dark grey for all text
 clr_marks <- "grey55"             # lighter grey for the scale bar and the north arrow
 clr_timeline <- "grey50"          # grey for the timeline and the outline of the bar
 clr_water <- "#9DC3E6"; clr_water_dark <- "#2F5597"; water_alpha <- 0.55   # rivers, lakes and river names
-clr_nest <- "#7B1E3A"; nest_alpha <- 0.75   # burgundy nests, thin black outline
+clr_nest <- "white"; clr_nest_outline <- "grey25"; nest_alpha <- 0.75   # white nests, dark grey outline, both transparent
 loss_alpha_max <- 0.9             # opacity of a 100 % RSS reduction (1 = fully opaque)
 elevation_colours <- c("#F3E4CF","#DDB98A","#C08A4E","#8F5A2A","#5A3416")   # light to dark brown
 elevation_alpha <- 0.7            # opacity of the elevation layer over the hillshade
@@ -352,7 +356,7 @@ map_plot <- function(i){
     geom_sf(data=lakes,fill=alpha(clr_water,water_alpha),colour=alpha(clr_water_dark,water_alpha),linewidth=0.25)+
     geom_text(data=river_labels,aes(x,y,label=river,angle=angle),family=font_family,fontface="italic",size=2.8,
               colour=alpha(clr_water_dark,water_alpha))+
-    geom_point(data=nests,aes(x,y),shape=21,size=2,fill=alpha(clr_nest,nest_alpha),colour=alpha("black",nest_alpha),stroke=0.5)+
+    geom_point(data=nests,aes(x,y),shape=21,size=2,fill=alpha(clr_nest,nest_alpha),colour=alpha(clr_nest_outline,nest_alpha),stroke=0.5)+
     geom_point(data=cities,aes(x,y),shape=21,size=1.9,fill=clr_text,colour="white",stroke=0.5)+
     geom_shadowtext(data=cities,aes(x,y,label=name),family=font_family,size=3,colour=clr_text,
                     bg.colour=alpha("white",0.7),bg.r=0.15,nudge_y=0.012*h,vjust=0)+
@@ -379,12 +383,15 @@ bar_plot <- function(i){
     scale_y_continuous(limits=c(0,bar_max),expand=expansion(mult=0))+
     theme_void(base_family=font_family)}
 
-# Bar title: drawn without clipping so that a line wider than the narrow panel is not cut
-bar_title_plot <- ggplot()+
-  annotate("text",x=0,y=1,label=bar_title,family=font_family,size=2.5,hjust=0.5,vjust=1,lineheight=0.95,colour=clr_text)+
-  scale_x_continuous(limits=c(-1,1))+scale_y_continuous(limits=c(0,1))+
-  coord_cartesian(clip="off")+
-  theme_void(base_family=font_family)
+# Bar title: drawn without clipping so that a line wider than the narrow panel is not cut.
+# One function for STEP 3 and 4, so that both titles are drawn with the same size and alignment.
+title_panel <- function(title){
+  ggplot()+
+    annotate("text",x=0,y=1,label=title,family=font_family,size=bar_title_size,hjust=0.5,vjust=1,lineheight=0.95,colour=clr_text)+
+    scale_x_continuous(limits=c(-1,1))+scale_y_continuous(limits=c(0,1))+
+    coord_cartesian(clip="off")+
+    theme_void(base_family=font_family)}
+bar_title_plot <- title_panel(bar_title)
 
 timeline_plot <- function(year,cursor_colour=clr_bar){
   ggplot()+
@@ -406,7 +413,7 @@ AAAAB
 AAAAB
 CCCCD
 "
-layout_widths <- c(1,1,1,1,0.45); layout_heights <- c(1,1,1,0.24)
+layout_widths <- c(1,1,1,1,0.55); layout_heights <- c(1,1,1,0.24)   # side column wide enough for the two-line bar titles
 fig_width <- 12
 map_panel_width <- fig_width*sum(layout_widths[1:4])/sum(layout_widths)
 fig_height <- map_panel_width*map_aspect*sum(layout_heights)/sum(layout_heights[1:3])
@@ -423,7 +430,10 @@ make_frame <- function(i){
 # window squeezes the side panels when the map keeps its fixed aspect ratio
 check_frame <- make_frame(2); system(paste("open",shQuote(check_frame)))
 
+# All frames are regenerated in one go after emptying the folder: the animation can only be assembled from
+# PNG produced by this run, with the same title and colours on every frame
 frame_index <- if(include_reference_frame) seq_along(dates) else seq_along(dates)[-1]
+unlink(list.files(frames_dir,pattern="\\.png$",full.names=TRUE))
 frame_files <- map_chr(frame_index,make_frame)
 
 # 3.6 Assemble the animation (last frame held twice as long) ----
@@ -445,22 +455,23 @@ av_encode_video(animation_frames,output=file.path(output_dir_ch,"issf_rss_change
 # of the lost area of STEP 3 (total grid area minus area lost); with the "no_building" reference the 1918
 # bar is already below the total. With `habitat_quantile = 0.5`, for instance, only the better half of the
 # reference landscape (log-RSS above the median) counts as habitat.
-# Map: same hillshade with a more opaque elevation layer; urbanisation drawn as white patches whose opacity
-# grows with the RSS reduction; water and cities lightened; nests purple with a black outline. The colour
-# bar is drawn by hand (bottom-right): the map colour fading to white, with a thin frame and no background.
+# Map: same hillshade with a more opaque elevation layer; urbanisation drawn as purple patches (same purple
+# as STEP 3) whose opacity grows with the RSS reduction; water and cities lightened; nests white with a
+# black outline. The colour bar is drawn by hand (bottom-right): the map colour fading to purple, with a
+# thin frame and no background.
 # Reuses the objects of STEP 3 (rss_change_vs_1918, hillshade_df, elevation_df, change_df, lakes, rivers,
-# river_labels, cities, nests, scale_bar, north_grob, layout, timeline_plot).
+# river_labels, cities, nests, scale_bar, north_grob, layout, title_panel, timeline_plot).
 
 # Parameters ----
 habitat_quantile <- 0             # 0 = all cells are habitat in 1918; 0.5 = cells above the 1918 median log-RSS
 elevation_alpha_4 <- 0.85         # elevation layer opacity (more opaque than in STEP 3)
-clr_urban <- "white"
-urban_alpha_max <- 0.95           # opacity of a 100 % RSS reduction
+clr_urban <- clr_purple           # RSS reduction on the map (transparent -> this colour)
+urban_alpha_max <- 0.9            # opacity of a 100 % RSS reduction
 water_alpha_4 <- 0.55             # opacity of rivers, lakes and river names
-clr_nest_4 <- "#7B1E3A"; nest_alpha_4 <- 0.75   # burgundy nests, black outline, slightly transparent
+clr_nest_4 <- "white"; nest_alpha_4 <- 0.75   # white nests, black outline, slightly transparent
 clr_bar_4 <- elevation_colours[4] # brown for the bar and the timeline cursor
 legend_title_4 <- sprintf("Habitat loss: reduction in relative selection\nstrength (%%) %s",reference_text)
-bar_title_4 <- sprintf("Area (km²) still available\nfor landing: relative selection\nstrength reduced by less than\n%d %%, %s",round(100*bar_threshold),reference_text)
+bar_title_4 <- "Change in availability\nof space (km²)"   # the threshold and the reference are given in the map legend
 frames_dir_4 <- file.path(output_dir_ch,"animation_frames_available")
 dir.create(frames_dir_4,showWarnings=FALSE)
 
@@ -478,8 +489,8 @@ write_csv(available_by_date,file.path(output_dir_ch,"area_available_by_date.csv"
 
 # 4.2 Map ----
 urban_gradient <- alpha(clr_urban,seq(0,urban_alpha_max,length.out=100))
-# Hand-drawn colour bar, bottom-right corner of the map (map units): the plateau colour fading to white,
-# i.e. what the map does as a cell is lost; a thin grey frame keeps the white end visible on the page
+# Hand-drawn colour bar, bottom-right corner of the map (map units): the plateau colour fading to purple,
+# i.e. what the map does as a cell is lost; a thin grey frame closes the bar on the page
 legend_ramp <- colorRampPalette(c(elevation_colours[2],clr_urban))(100)
 legend_box <- c(x0=map_xlim[2]-0.19*w,x1=map_xlim[2]-0.03*w,y0=map_ylim[1]+0.035*h,y1=map_ylim[1]+0.05*h)
 legend_ticks <- tibble(x=legend_box[["x0"]]+c(0,0.5,1)*(legend_box[["x1"]]-legend_box[["x0"]]),label=c("0 %","50 %","100 %"))
@@ -499,7 +510,7 @@ map_plot_4 <- function(i){
     geom_sf(data=lakes,fill=alpha(clr_water,water_alpha_4),colour=alpha(clr_water_dark,water_alpha_4),linewidth=0.25)+
     geom_text(data=river_labels,aes(x,y,label=river,angle=angle),family=font_family,fontface="italic",size=2.8,
               colour=alpha(clr_water_dark,water_alpha_4))+
-    geom_point(data=nests,aes(x,y),shape=21,size=2,fill=alpha(clr_nest_4,nest_alpha_4),colour=alpha("black",nest_alpha_4),stroke=0.6)+
+    geom_point(data=nests,aes(x,y),shape=21,size=2,fill=alpha(clr_nest_4,nest_alpha_4),colour=alpha(clr_nest_outline,nest_alpha_4),stroke=0.6)+
     geom_point(data=cities,aes(x,y),shape=21,size=1.9,fill=clr_text,colour="white",stroke=0.5)+
     geom_shadowtext(data=cities,aes(x,y,label=name),family=font_family,size=3,colour=clr_text,
                     bg.colour=alpha("white",0.7),bg.r=0.15,nudge_y=0.012*h,vjust=0)+
@@ -535,11 +546,7 @@ bar_plot_4 <- function(i){
     scale_y_continuous(limits=c(0,bar_max_4),expand=expansion(mult=0))+
     theme_void(base_family=font_family)}
 
-bar_title_plot_4 <- ggplot()+
-  annotate("text",x=0,y=1,label=bar_title_4,family=font_family,size=2.5,hjust=0.5,vjust=1,lineheight=0.95,colour=clr_text)+
-  scale_x_continuous(limits=c(-1,1))+scale_y_continuous(limits=c(0,1))+
-  coord_cartesian(clip="off")+
-  theme_void(base_family=font_family)
+bar_title_plot_4 <- title_panel(bar_title_4)
 
 # 4.4 Frames and animation ----
 make_frame_4 <- function(i){
@@ -552,11 +559,10 @@ make_frame_4 <- function(i){
 
 check_frame_4 <- make_frame_4(2); system(paste("open",shQuote(check_frame_4)))
 
+unlink(list.files(frames_dir_4,pattern="\\.png$",full.names=TRUE))   # same reason as in STEP 3
 frame_files_4 <- map_chr(frame_index,make_frame_4)
 animation_frames_4 <- c(frame_files_4,frame_files_4[length(frame_files_4)])
 gifski(animation_frames_4,gif_file=file.path(output_dir_ch,"issf_available_area_1918_2026.gif"),
        width=frame_size[1],height=frame_size[2],delay=frame_delay)
 av_encode_video(animation_frames_4,output=file.path(output_dir_ch,"issf_available_area_1918_2026.mp4"),
                 framerate=1/frame_delay)
-
-
