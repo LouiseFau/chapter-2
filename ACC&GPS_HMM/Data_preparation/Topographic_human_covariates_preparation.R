@@ -151,12 +151,6 @@ names(topographic_covariates) <- c("slope_8_neighbors", "tri_8_neighbors", "dist
 #' **Note:** Building footprints were downloaded from the Overture Maps Buildings
 #' dataset (https://docs.overturemaps.org/getting-data/) and previously rasterized
 #' with GDAL as a binary 100 m res. raster.
-#'
-#' Resident population was downloaded from GHS-POP R2023A, epoch 2020, resolution
-#' 100 m, World Mollweide projection
-#' (https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php), mosaicked
-#' over the Alps and previously reprojected and aligned to the settlement raster
-#' in EPSG:3035. 
 #' 
 #' **Aims:** calculate density of people and settlement within a circular window
 #' containing 97 cells, corresponding to approximately 0.97 km2 and a radius of
@@ -175,7 +169,6 @@ library(terra)
 terraOptions(memfrac = 0.10, memmax = 2, todisk = TRUE, progress = 1)
 
 # Data ----
-pop <- rast("C:/Users/lfaure7/Downloads/HFI_100m/temporary/population_count_100m_3035.tif")
 settlement <- rast("C:/Users/lfaure7/Downloads/HFI_100m/built_cells_100m.tif")
 
 # Circular window of approximately 1 km2 ----
@@ -207,5 +200,71 @@ focal_tiled <- function(x, w, filename, scale_factor = 1, tile_rows = 500) {
 # Settlement density: proportion of built 100 m cells ----
 settlement_density <- focal_tiled(settlement, weight_matrix, "C:/Users/lfaure7/Downloads/settlement_density_1km2_100m.tif")
 
+
+
+# STEP 3: resident population density ----
+#' **Note:** Resident population was downloaded from GHS-POP R2023A, epoch 2020,
+#' resolution 100 m, World Mollweide projection (ESRI:54009)
+#' (https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php).
+#'
+#' **Steps:**
+#' (i) merge the two population tiles over a buffered alpine extent
+#' (ii) reproject GHS-POP onto the settlement grid with method = "sum"
+#' (iii) calculate population density in residents per km2 within 0.97 km2
+#' (iv) save as geotiff
+
+
+library(terra)
+
+# Parameters ----
+terraOptions(memfrac = 0.10, memmax = 2, todisk = TRUE, progress = 1)
+buffer_m <- 10000
+
+# Data ----
+pop_1 <- rast("/Users/louisefaure/Downloads/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C20/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C20.tif")
+pop_2 <- rast("/Users/louisefaure/Downloads/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C19/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_R4_C19.tif")
+alpine_convention <- vect("/Users/louisefaure/Library/CloudStorage/OneDrive-Personnel/MEMOIRE M2/eagle_projet/data/alpine-bounderies/Alpine_Convention_Perimeter_2018_v2/Alpine_Convention_Perimeter_2018_v2.shp")
+settlement_density <- rast("/Users/louisefaure/Desktop/dossier sans titre/Rasters/overture_built_cell_1km2_100m.tif")
+
+# Circular window of approximately 1 km2 ----
+cell_offsets <- -6:6
+radius_m <- sqrt(1e6 / pi)
+weight_matrix <- outer(cell_offsets, cell_offsets, function(row_offset, column_offset) ifelse((row_offset * 100)^2 + (column_offset * 100)^2 <= radius_m^2, 1, NA_real_))
+
+# Tiled focal calculation ----
+focal_tiled <- function(x, w, filename, scale_factor = 1, tile_rows = 500) {
+  tile_directory <- tempfile("terra_focal_")
+  dir.create(tile_directory)
+  on.exit(unlink(tile_directory, recursive = TRUE, force = TRUE), add = TRUE)
+  halo <- floor(nrow(w) / 2)
+  core_extents <- getTileExtents(x, y = c(tile_rows, ncol(x)), buffer = 0)
+  buffered_extents <- getTileExtents(x, y = c(tile_rows, ncol(x)), buffer = halo)
+  tile_files <- file.path(tile_directory, sprintf("tile_%03d.tif", seq_len(nrow(core_extents))))
+  for (i in seq_len(nrow(core_extents))) {
+    input_tile <- crop(x, ext(as.numeric(buffered_extents[i, ])), snap = "out")
+    raw_file <- file.path(tile_directory, sprintf("raw_%03d.tif", i))
+    output_tile <- focal(input_tile, w = w, fun = "mean", na.rm = TRUE, filename = raw_file, overwrite = TRUE, wopt = list(datatype = "FLT4S", gdal = c("TILED=YES", "COMPRESS=ZSTD", "PREDICTOR=3", "BIGTIFF=IF_SAFER")))
+    output_tile <- crop(output_tile, ext(as.numeric(core_extents[i, ])), snap = "near") * scale_factor
+    writeRaster(output_tile, tile_files[i], overwrite = TRUE, datatype = "FLT4S", gdal = c("TILED=YES", "COMPRESS=ZSTD", "PREDICTOR=3", "BIGTIFF=IF_SAFER"))
+    unlink(raw_file, force = TRUE)
+  }
+  output_vrt <- vrt(tile_files, filename = file.path(tile_directory, "output.vrt"), overwrite = TRUE)
+  writeRaster(output_vrt, filename, overwrite = TRUE, datatype = "FLT4S", gdal = c("TILED=YES", "COMPRESS=ZSTD", "PREDICTOR=3", "BIGTIFF=IF_SAFER"))
+}
+
+# Crop extent---
+alpine_buffered <- buffer(project(alpine_convention, crs(settlement_density)), width = buffer_m)
+crop_extent <- ext(min(xmin(settlement_density), xmin(alpine_buffered)) - buffer_m, max(xmax(settlement_density), xmax(alpine_buffered)) + buffer_m, min(ymin(settlement_density), ymin(alpine_buffered)) - buffer_m, max(ymax(settlement_density), ymax(alpine_buffered)) + buffer_m)
+crop_polygon <- project(as.polygons(crop_extent, crs = crs(settlement_density)), crs(pop_1))
+
+# Merge the two tiles over that extent ----
+pop_merged <- merge(sprc(crop(pop_1, crop_polygon, snap = "out"), crop(pop_2, crop_polygon, snap = "out")))
+
+# Reproject GHS-POP onto the settlement grid ----
+#' Population is a count, not a density: only method = "sum" conserves totals.
+pop_3035 <- project(pop_merged, settlement_density, method = "sum")
+
+pop_3035 <- subst(pop_3035, NA, 0)
+
 # Population density: mean residents per 100 m cell divided by 0.01 km2 ----
-population_density <- focal_tiled(pop, weight_matrix, "C:/Users/lfaure7/Downloads/population_density_1km2_100m.tif", scale_factor = 100)
+population_density <- focal_tiled(pop_3035, weight_matrix, "/Users/louisefaure/Desktop/dossier sans titre/Rasters/population_density_1km2_100m.tif", scale_factor = 100)
